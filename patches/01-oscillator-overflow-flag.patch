@@ -1,0 +1,30 @@
+Patch 01 — Oscillator: compute the ARM overflow flag in C (native port)
+Origin: mechanical-dance/PHX-D01, patches/01-oscillator-overflow-flag.patch
+(GPL-3.0; see NOTICE). Kept byte-identical to PHX-D01's patch below this header.
+
+Why: Oscillator.c calcNoise() reads the Cortex-M APSR overflow (V) flag via
+__get_APSR() to detect the signed overflow of the phase-accumulator add. There
+is no APSR on a host CPU, so the patch computes the same condition explicitly
+from the operands: overflow iff the sign bits of prev and phaseInc agree and
+the sign of the result differs. Muse's independent host-compile audit of the
+firmware (Oct 28, 2026) flagged the identical spot before PHX-D01 was read.
+
+--- a/Core/Src/Soundengine/DSPAudio/Oscillator.c
++++ b/Core/Src/Soundengine/DSPAudio/Oscillator.c
+@@ -342,12 +342,13 @@
+ //-----------------------------------------------------------
+ int16_t calcNoise(OscInfo* osc)
+ {
++	const uint32_t prev = osc->phase;
+ 	osc->phase += osc->phaseInc;
+ 
+ 	//check overflow flag, ( if osc->phase == osc->phaseInc a reset occured ==> retrigger, too
+-	APSR_Type apsr;
+-	apsr.w = __get_APSR();
+-	if(apsr.b.V ||  (osc->phase == osc->phaseInc))
++	// native: the ARM V flag (signed overflow of the add), computed explicitly
++	const int signedOverflow = (int32_t)((prev ^ osc->phase) & (osc->phaseInc ^ osc->phase)) < 0;
++	if(signedOverflow ||  (osc->phase == osc->phaseInc))
+ 	{
+ 		//overflow happened -> phaseWrapped
+ 

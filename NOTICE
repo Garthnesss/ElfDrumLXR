@@ -1,0 +1,35 @@
+ElfDrumLXR — attributions
+=========================
+
+ElfDrumLXR is GPL-3.0 (see LICENSE). It is built on two GPL-3.0 codebases:
+
+1. Erica Synths — LXR-02 firmware (lxr-desktop-app)
+   Copyright (c) Erica Synths / Julian Schmidt (Sonic Potions) and contributors.
+   Source: https://github.com/erica-synths/lxr-desktop-app
+   Pinned commit: a43cd4fcda23ec3d577dc425261c3eb28bd5abff (see VENDOR_COMMIT).
+   The sound engine, sequencer, MIDI and preset code compiled by this project is
+   Erica Synths' firmware, fetched unmodified by scripts/fetch-vendor.sh and
+   patched only by the numbered patches in patches/ (applied to a build copy).
+   ElfDrumLXR is not affiliated with or endorsed by Erica Synths or Sonic
+   Potions. "Erica Synths", "LXR" and "LXR-02" are their trademarks; "LXR" is
+   used in this project's name descriptively — the product runs the LXR-02
+   firmware engine.
+
+2. mechanical-dance — PHX-D01
+   Copyright (c) 2026 jenghis / mechanical-dance.
+   Source: https://github.com/mechanical-dance/PHX-D01
+   The host-port design proven by PHX-D01 is reused here under GPL-3.0:
+   - patches/01-oscillator-overflow-flag.patch is PHX-D01's patch, verbatim.
+   - shim/ (stm32f7xx_hal.h, stm32f7xx.h, fatfs.h, usbd_cdc.h) is adapted from
+     PHX-D01's shim, with __SADD16 and the __SMLALD family added (not called
+     by the pinned firmware today; provided for the documented ARM DSP
+     surface and covered by tests/test_intrinsics.c).
+   - engine/ (engine.c, engine.h, kit.c, stubs.c) is adapted from PHX-D01's
+     host/ wrapper: kit loading by front-panel CC replay, the parameter-127
+     out-of-bounds skip, and the NULL-parameter-pointer scratch fix are
+     PHX-D01's findings. PHX-D01's Eurorack-module mod matrix is not carried
+     over (out of scope for this project).
+   - tools/lxr-render.c is adapted from PHX-D01's host/render.c.
+   - factory/INIT.SND is copied from PHX-D01's factory/ folder (the firmware's
+     Initkit).
+   - The Makefile's copy-vendor-then-patch build structure follows PHX-D01's.
