@@ -131,6 +131,13 @@ void lxr_render(int16_t jack[LXR_JACKS][LXR_BLOCK])
 	}
 }
 
+const int16_t* lxr_stem_data(int voice)
+{
+	extern int16_t mixer_stemData[6][128];   /* patch 04 (mixer.c) */
+	if (voice < 0 || voice > 5) return NULL;
+	return mixer_stemData[voice];
+}
+
 void lxr_set_fader(int voice, float gain)
 {
 	extern float lxr_fader_gain[6];

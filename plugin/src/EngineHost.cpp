@@ -46,6 +46,18 @@ void EngineHost::prepare (double hostSampleRate)
         fifo[c].clear();
     }
     fifoHead = 0;
+    // Stems latch here: prepare() is where every stream counter resets, so a
+    // stem stream enabled now starts on the same engine frame as the mains.
+    stemsEnabled = stemsWanted;
+    for (int c = 0; c < kStemChannels; ++c)
+    {
+        if (stemsEnabled)
+            stemResampler[c].reset (makeResampler (kEngineRate, hostRate));
+        else
+            stemResampler[c].reset();
+        stemFifo[c].clear();
+    }
+    stemFifoHead = 0;
     pendingHits.clear();
     hostPosition = 0;
     engineFrames = 0;
@@ -64,6 +76,12 @@ void EngineHost::release()
         resampler[c].reset();
         fifo[c].clear();
     }
+    for (int c = 0; c < kStemChannels; ++c)
+    {
+        stemResampler[c].reset();
+        stemFifo[c].clear();
+    }
+    stemFifoHead = 0;
     pendingHits.clear();
     if (engineUsers > 0) --engineUsers;
 }
@@ -145,6 +163,24 @@ void EngineHost::generateBlock()
         const int produced = resampler[c]->process (in, kBlock, op);
         fifo[c].insert (fifo[c].end(), op, op + produced);
     }
+
+    if (stemsEnabled)
+    {
+        // Patch 04's per-voice contribution buffers, deinterleaved and resampled
+        // through the same r8brain settings as the mains (same stream latency).
+        for (int v = 0; v < kStems; ++v)
+        {
+            const int16_t* stem = lxr_stem_data (v);
+            for (int c = 0; c < 2; ++c)
+            {
+                double in[kBlock];
+                for (int i = 0; i < kBlock; ++i) in[i] = stem[2 * i + c] * (1.0 / 32768.0);
+                double* op = nullptr;
+                const int produced = stemResampler[2 * v + c]->process (in, kBlock, op);
+                stemFifo[2 * v + c].insert (stemFifo[2 * v + c].end(), op, op + produced);
+            }
+        }
+    }
     engineFrames += kBlock;
 }
 
@@ -176,5 +212,34 @@ void EngineHost::render (float* const* out, int numSamples)
         for (int c = 0; c < kJacks; ++c)
             fifo[c].erase (fifo[c].begin(), fifo[c].begin() + (std::ptrdiff_t) fifoHead);
         fifoHead = 0;
+    }
+}
+
+void EngineHost::renderStems (float* const* out, int numSamples)
+{
+    if (! prepared || ! stemsEnabled)
+    {
+        for (int c = 0; c < kStemChannels; ++c) std::fill (out[c], out[c] + numSamples, 0.0f);
+        return;
+    }
+
+    // render() for this block already generated the engine blocks; the stem
+    // FIFOs hold exactly as many samples as the main FIFOs did. Consume in
+    // lockstep (same count, same master trim as the mains).
+    for (int c = 0; c < kStemChannels; ++c)
+    {
+        const float* src = stemFifo[c].data() + stemFifoHead;
+        if (masterGain == 1.0f)
+            std::copy (src, src + numSamples, out[c]);
+        else
+            for (int i = 0; i < numSamples; ++i) out[c][i] = src[i] * masterGain;
+    }
+    stemFifoHead += (size_t) numSamples;
+
+    if (stemFifoHead >= 65536)
+    {
+        for (int c = 0; c < kStemChannels; ++c)
+            stemFifo[c].erase (stemFifo[c].begin(), stemFifo[c].begin() + (std::ptrdiff_t) stemFifoHead);
+        stemFifoHead = 0;
     }
 }

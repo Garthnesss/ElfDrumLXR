@@ -1,0 +1,133 @@
+Patch 04 — Per-voice stem capture in the mixer (Phase 4 experiment)
+
+Why: the firmware mixer routes each voice to one of the two DAC pairs or
+the FX bus; there is no per-voice breakout. This patch adds a passive tap:
+after each voice's distribution call in mixer_calcNextSampleBlock (the
+USE_TRIGGERED_PAN path the build actually compiles), a helper records the
+voice's own stereo contribution — post voice DSP, post performance fader,
+post pan, pre destination-sum saturation, pre FX — into
+mixer_stemData[voice]. The tap writes only its own buffer; no firmware
+state or output path is modified, so the main buses are bit-identical
+(gate: tools/stem-gate.sh / STATUS Phase 4). The host wrapper exposes the
+buffers as lxr_stem_data(); the plugin surfaces them as six extra stereo
+output buses (disabled by default; see ARCHITECTURE).
+
+--- a/Core/Inc/Soundengine/DSPAudio/mixer.h
++++ b/Core/Inc/Soundengine/DSPAudio/mixer.h
+@@ -25,7 +25,13 @@
+ extern float mixer_decimation_rate[7];		/**<sets the sample rate decimation. 0..1 = full rate*/
+ #endif
+ 
+-extern uint8_t mixer_audioRouting[6];
++extern uint8_t mixer_audioRouting[6];
++
++/* Phase 4 (ElfDrumLXR patch 04): per-voice stem capture — interleaved L/R,
++ * 2 * OUTPUT_DMA_SIZE int16 per voice (OUTPUT_DMA_SIZE is 64 in the shipped
++ * config, USE_BIG_SAMPLE_BUFFER 1). Written per block by the mixer; the host
++ * wrapper reads it after mixer_calcNextSampleBlock() returns. */
++extern int16_t mixer_stemData[6][128];
+ 
+ enum
+ {
+--- a/Core/Src/Soundengine/DSPAudio/mixer.c
++++ b/Core/Src/Soundengine/DSPAudio/mixer.c
+@@ -33,6 +33,12 @@
+ 
+ //-----------------------------------------------------------------------
+ INDTCMZ uint8_t mixer_audioRouting[6];
++//-----------------------------------------------------------------------
++// Phase 4 stem capture (ElfDrumLXR patch 04): per-voice stereo contribution
++// of the most recent block, interleaved L/R, written by mixer_captureStem()
++// during mixer_calcNextSampleBlock and read by the host wrapper afterwards.
++// Never read by the firmware itself.
++INDTCMZ int16_t mixer_stemData[6][OUTPUT_DMA_SIZE*2];
+ //-----------------------------------------------------------------------
+ #if USE_DECIMATOR
+ INDTCMZ float mixer_decimation_rate[7];		/**<sets the sample rate decimation. 0..1 = full rate*/
+@@ -545,6 +551,38 @@
+ }
+ //#pragma GCC pop_options
+ //-----------------------------------------------------------------------
++// Phase 4 stem capture (ElfDrumLXR patch 04): record voice `voice`'s stereo
++// contribution exactly as mixer_addDataToOutput() distributes it, BEFORE the
++// destination sum saturates and before any FX processing. Stereo and FX-bus
++// destinations contribute the panned pair (int16)(data*panL), (int16)(data*panR);
++// the mono destinations contribute the full signal on their channel and silence
++// on the other. The destination goes through the same jack-availability remap
++// as the add, so the channel shape matches what was actually distributed.
++// A stem is the voice's own post-fader, post-pan signal: stems do NOT sum to
++// the main buses when the FX bus is active (mains carry the wet result, stems
++// the dry contribution) or when several voices share a destination (the mains
++// saturate per sample, the stems do not).
++static void mixer_captureStem(uint8_t voice, uint8_t dest, const float panL, const float panR, int16_t* data)
++{
++	int16_t* stem = mixer_stemData[voice];
++	uint8_t i;
++	dest = mixer_checkOutJackAvailable(dest);
++	switch (dest)
++	{
++	case MIXER_ROUTING_DAC1_L:
++	case MIXER_ROUTING_DAC2_L:
++		for (i = 0; i < OUTPUT_DMA_SIZE; i++) { stem[2*i] = data[i]; stem[2*i+1] = 0; }
++		break;
++	case MIXER_ROUTING_DAC1_R:
++	case MIXER_ROUTING_DAC2_R:
++		for (i = 0; i < OUTPUT_DMA_SIZE; i++) { stem[2*i] = 0; stem[2*i+1] = data[i]; }
++		break;
++	default: /* MIXER_ROUTING_DAC1_STEREO, MIXER_ROUTING_DAC2_STEREO, MIXER_ROUTING_FX_BUS */
++		for (i = 0; i < OUTPUT_DMA_SIZE; i++) { stem[2*i] = (int16_t)(data[i] * panL); stem[2*i+1] = (int16_t)(data[i] * panR); }
++		break;
++	}
++}
++
+ IN_ITCM_RAM void mixer_calcNextSampleBlock(int16_t* output,int16_t* output2)
+ {
+ 
+@@ -615,6 +653,7 @@
+ 
+ #if USE_TRIGGERED_PAN
+ 	mixer_addDataToOutput(mixer_audioRouting[0],voiceArray[0].triggeredPanL  ,voiceArray[0].triggeredPanR , sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
++	mixer_captureStem(0, mixer_audioRouting[0],voiceArray[0].triggeredPanL  ,voiceArray[0].triggeredPanR, sampleData);
+ #else
+ 	mixer_addDataToOutput(mixer_audioRouting[0],sqrtf((127-voiceArray[0].pan)/127.f) ,sqrtf(voiceArray[0].pan/127.f), sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
+ #endif
+@@ -638,6 +677,7 @@
+ #else
+ #if USE_TRIGGERED_PAN
+ 	mixer_addDataToOutput(mixer_audioRouting[1],voiceArray[1].triggeredPanL  ,voiceArray[1].triggeredPanR , 			sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
++	mixer_captureStem(1, mixer_audioRouting[1],voiceArray[1].triggeredPanL  ,voiceArray[1].triggeredPanR, sampleData);
+ #else
+ 	mixer_addDataToOutput(mixer_audioRouting[1],sqrtf((127-voiceArray[1].pan)/127.f) ,sqrtf(voiceArray[1].pan/127.f), 	sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
+ #endif
+@@ -657,6 +697,7 @@
+ #else
+ #if USE_TRIGGERED_PAN
+ 	mixer_addDataToOutput(mixer_audioRouting[2],voiceArray[2].triggeredPanL  ,voiceArray[2].triggeredPanR , 			sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
++	mixer_captureStem(2, mixer_audioRouting[2],voiceArray[2].triggeredPanL  ,voiceArray[2].triggeredPanR, sampleData);
+ #else
+ 	mixer_addDataToOutput(mixer_audioRouting[2],sqrtf((127-voiceArray[2].pan)/127.f) ,sqrtf(voiceArray[2].pan/127.f), 	sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
+ #endif
+@@ -673,6 +714,7 @@
+ 
+ #if USE_TRIGGERED_PAN
+ 	mixer_addDataToOutput(mixer_audioRouting[3],snareVoice.triggeredPanL  ,snareVoice.triggeredPanR , 			sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
++	mixer_captureStem(3, mixer_audioRouting[3],snareVoice.triggeredPanL  ,snareVoice.triggeredPanR, sampleData);
+ #else
+ 	mixer_addDataToOutput(mixer_audioRouting[3],sqrtf((127-snareVoice.pan)/127.f), sqrtf(snareVoice.pan/127.f), sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
+ #endif
+@@ -687,6 +729,7 @@
+ #else
+ #if USE_TRIGGERED_PAN
+ 	mixer_addDataToOutput(mixer_audioRouting[4],cymbalVoice.triggeredPanL  ,cymbalVoice.triggeredPanR , 			sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
++	mixer_captureStem(4, mixer_audioRouting[4],cymbalVoice.triggeredPanL  ,cymbalVoice.triggeredPanR, sampleData);
+ #else
+ 	mixer_addDataToOutput(mixer_audioRouting[4],sqrtf((127-cymbalVoice.pan)/127.f),	sqrtf(cymbalVoice.pan/127.f), sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
+ #endif
+@@ -703,6 +746,7 @@
+ #else
+ #if USE_TRIGGERED_PAN
+ 	mixer_addDataToOutput(mixer_audioRouting[5],hatVoice.triggeredPanL  ,hatVoice.triggeredPanR , 			sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
++	mixer_captureStem(5, mixer_audioRouting[5],hatVoice.triggeredPanL  ,hatVoice.triggeredPanR, sampleData);
+ #else
+ 	mixer_addDataToOutput(mixer_audioRouting[5],sqrtf((127-hatVoice.pan)/127.f),sqrtf(hatVoice.pan/127.f), sampleData,&output[pos],&output[pos+1],&output2[pos],&output2[pos+1], fxBusData);
+ #endif

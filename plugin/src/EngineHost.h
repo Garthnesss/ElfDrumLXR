@@ -16,6 +16,8 @@ class EngineHost
 public:
     static constexpr double kEngineRate = 44140.0;
     static constexpr int kJacks = 4;
+    static constexpr int kStems = 6;          // Phase 4: per-voice stem buses (patch 04)
+    static constexpr int kStemChannels = 12;  // 6 stereo stems, interleaved per voice below
 
     EngineHost();
     ~EngineHost();
@@ -50,6 +52,15 @@ public:
     // Fill exactly numSamples per jack channel with host-rate audio. out[] = 4 channel pointers.
     void render (float* const* out, int numSamples);
 
+    // Phase 4 stems: request stem capture at the next prepare() (latched there,
+    // where all stream state resets, so stems and mains stay sample-aligned).
+    // renderStems fills 12 channel pointers (voice-major: stem v = out[2v], out[2v+1])
+    // and must be called with the same numSamples as render() in the same block,
+    // after render() (which drives block generation). Silence when not enabled.
+    void setStemsEnabled (bool enabled) { stemsWanted = enabled; }
+    bool getStemsEnabled() const { return stemsEnabled; }
+    void renderStems (float* const* out, int numSamples);
+
     uint64_t getHostPosition() const { return hostPosition; }
 
     // Phase 3: the firmware's systick time base, for the processor's transport logic.
@@ -68,6 +79,12 @@ private:
     std::unique_ptr<r8b::CDSPResampler> resampler[kJacks];
     std::vector<float> fifo[kJacks];
     size_t fifoHead = 0;             // shared: all channels produce identical counts
+
+    bool stemsWanted = false;
+    bool stemsEnabled = false;
+    std::unique_ptr<r8b::CDSPResampler> stemResampler[kStemChannels];
+    std::vector<float> stemFifo[kStemChannels];
+    size_t stemFifoHead = 0;
 
     std::vector<Hit> pendingHits;    // sorted by engineFrame when consumed
     uint64_t hostPosition = 0;       // host samples rendered so far

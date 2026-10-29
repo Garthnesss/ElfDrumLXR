@@ -23,6 +23,9 @@ void lxr_hit(int voice, uint8_t velocity);                   /* trigger 0-6: voi
 void lxr_note(int voice, uint8_t note, uint8_t velocity);    /* as lxr_hit, pitched: note 60 = the kit's own pitch, +-1 = a semitone */
 void lxr_set_fader(int voice, float gain);                    /* voice 0-5 fader gain 0-1, after the fader curve; 1 = no fader */
 void lxr_render(int16_t jack[LXR_JACKS][LXR_BLOCK]);          /* one mono buffer per output jack */
+/* Phase 4 stems (patch 04): voice 0-5's stereo contribution to the last rendered
+   block, interleaved L/R, LXR_BLOCK frames. Valid until the next lxr_render. */
+const int16_t* lxr_stem_data(int voice);
 
 /* --- Phase 1 additions: firmware globals + the external-MIDI parser entry --- */
 /* Feed raw external-MIDI bytes into the firmware's own parser (midiParser_parseUartData):

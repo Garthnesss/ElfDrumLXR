@@ -71,7 +71,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout ElfDrumLXRProcessor::createP
 ElfDrumLXRProcessor::ElfDrumLXRProcessor()
     : AudioProcessor (BusesProperties()
                           .withOutput ("Main (DAC1)", juce::AudioChannelSet::stereo(), true)
-                          .withOutput ("Out 2 (DAC2)", juce::AudioChannelSet::stereo(), true)),
+                          .withOutput ("Out 2 (DAC2)", juce::AudioChannelSet::stereo(), true)
+                          // Phase 4 stems (patch 04): per-voice breakouts, disabled by
+                          // default — a host enables the ones it wants; the default
+                          // layout stays exactly the two hardware stereo pairs.
+                          .withOutput ("Stem Drum 1", juce::AudioChannelSet::stereo(), false)
+                          .withOutput ("Stem Drum 2", juce::AudioChannelSet::stereo(), false)
+                          .withOutput ("Stem Drum 3", juce::AudioChannelSet::stereo(), false)
+                          .withOutput ("Stem Snare", juce::AudioChannelSet::stereo(), false)
+                          .withOutput ("Stem Cymbal", juce::AudioChannelSet::stereo(), false)
+                          .withOutput ("Stem HiHat", juce::AudioChannelSet::stereo(), false)),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
     for (int i = 0; i < kNumKitParams; ++i)
@@ -132,6 +141,13 @@ juce::String ElfDrumLXRProcessor::getMorphTargetName()
 //==============================================================================
 void ElfDrumLXRProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    // Stems latch inside EngineHost::prepare (stream state resets there):
+    // enabled iff the host enabled at least one stem bus in this layout.
+    bool anyStem = false;
+    for (int b = 2; b < getBusCount (false); ++b)
+        if (auto* bus = getBus (false, b))
+            anyStem = anyStem || bus->isEnabled();
+    host.setStemsEnabled (anyStem);
     host.prepare (sampleRate);
     setLatencySamples (host.getLatencySamples());
     scratch.assign ((size_t) std::max (samplesPerBlock, 1), 0.0f);
@@ -147,12 +163,14 @@ bool ElfDrumLXRProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
 {
     if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
         return false;
-    if (layouts.outputBuses.size() > 2)
+    if (layouts.outputBuses.size() > 8)
         return false;
-    if (layouts.outputBuses.size() == 2
-        && layouts.outputBuses[1] != juce::AudioChannelSet::stereo()
-        && ! layouts.outputBuses[1].isDisabled())
-        return false;
+    // Bus 2 (DAC2) and the six Phase 4 stem buses: stereo when enabled,
+    // or disabled. Nothing else.
+    for (int b = 1; b < layouts.outputBuses.size(); ++b)
+        if (layouts.outputBuses[b] != juce::AudioChannelSet::stereo()
+            && ! layouts.outputBuses[b].isDisabled())
+            return false;
     return layouts.getMainInputChannelSet().isDisabled();
 }
 
@@ -391,18 +409,27 @@ void ElfDrumLXRProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         }
     }
 
-    // --- Audio: 4 engine jacks -> bus 1 (jacks 1/2 = DAC1), bus 2 (jacks 3/4 = DAC2) ---
+    // --- Audio: 4 engine jacks -> bus 0 (jacks 1/2 = DAC1), bus 1 (jacks 3/4 = DAC2);
+    //     patch-04 stems -> buses 2..7 when the host enabled them ---
     const int numSamples = buffer.getNumSamples();
     if ((int) scratch.size() < numSamples)
         scratch.assign ((size_t) numSamples, 0.0f);   // host exceeded its declared block size
-    std::array<float*, 4> chans;
-    for (int c = 0; c < 4; ++c)
-        chans[c] = (c < buffer.getNumChannels()) ? buffer.getWritePointer (c)
-                                                 : scratch.data();
+    auto busChannel = [&buffer, this] (int bus, int chan) -> float*
+    {
+        auto bb = getBusBuffer (buffer, false, bus);
+        return chan < bb.getNumChannels() ? bb.getWritePointer (chan) : scratch.data();
+    };
+    std::array<float*, 4> chans { busChannel (0, 0), busChannel (0, 1),
+                                  busChannel (1, 0), busChannel (1, 1) };
     host.render (chans.data(), numSamples);
-    if (buffer.getNumChannels() > 4)
-        for (int c = 4; c < buffer.getNumChannels(); ++c)
-            buffer.clear (c, 0, numSamples);
+    if (host.getStemsEnabled())
+    {
+        std::array<float*, EngineHost::kStemChannels> stemChans;
+        for (int v = 0; v < EngineHost::kStems; ++v)
+            for (int c = 0; c < 2; ++c)
+                stemChans[2 * v + c] = busChannel (2 + v, c);
+        host.renderStems (stemChans.data(), numSamples);
+    }
 }
 
 //==============================================================================

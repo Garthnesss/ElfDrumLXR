@@ -51,6 +51,7 @@ public:
 
     // --- message-thread API (editor, file layer) ---
     bool loadKitFile (const juce::File& file);          // .SND (255 B, or 309 B module kit)
+    bool isStemsEnabled() const { return host.getStemsEnabled(); }  // Phase 4: any stem bus live in the current layout
     bool loadMorphTargetFile (const juce::File& file);  // set the morph target kit explicitly
     bool saveKitFile (const juce::File& file);          // writes name + current kit bytes (255 B)
     void loadFactoryInit();                             // factory INIT kit as a normal load
