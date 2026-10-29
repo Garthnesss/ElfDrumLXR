@@ -111,6 +111,8 @@ target_sources(ElfDrumLXR PRIVATE
     src/PluginProcessor.cpp
     src/PluginEditor.cpp
     src/SeqEditor.cpp
+    src/Phase5.cpp
+    src/Phase5Editor.cpp
     src/EngineHost.cpp src/EngineSwap.cpp)
 target_include_directories(ElfDrumLXR PRIVATE
     src

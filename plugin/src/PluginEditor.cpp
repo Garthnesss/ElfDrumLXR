@@ -1,6 +1,7 @@
 #include "PluginEditor.h"
 #include "ParamMetadata.generated.h"
 #include "SeqEditor.h"
+#include "Phase5Editor.h"
 #include "InitKit.h"
 #include <algorithm>
 #include <set>
@@ -495,6 +496,12 @@ ElfDrumLXRProcessorEditor::ElfDrumLXRProcessorEditor (ElfDrumLXRProcessor& p)
     }
     // Phase 3: the Sequencer tab (firmware pattern editor, see SeqEditor).
     tabs.addTab ("Sequencer", juce::Colour (0xff22252b), new SeqEditor (processor), true);
+    // Phase 5: the bonus-programme pages (see Phase5Editor).
+    tabs.addTab ("Blender", juce::Colour (0xff22252b), new BlenderPage (processor), true);
+    tabs.addTab ("Library", juce::Colour (0xff22252b), new LibraryPage (processor), true);
+    tabs.addTab ("Create", juce::Colour (0xff22252b), new CreatePage (processor), true);
+    tabs.addTab ("Perform", juce::Colour (0xff22252b), new PerformPage (processor), true);
+    tabs.addTab ("Export", juce::Colour (0xff22252b), new ExportPage (processor), true);
     addAndMakeVisible (tabs);
 
     kitNameLabel.setText (processor.getKitName(), juce::dontSendNotification);
@@ -641,14 +648,11 @@ void ElfDrumLXRProcessorEditor::stepKit (int delta)
 // Per-voice slices (copy/paste in memory; save/load via .lxv files)
 void ElfDrumLXRProcessorEditor::applySliceToVoice (int voice, const std::vector<uint8_t>& slice)
 {
-    const auto& idxs = voiceslice::indicesForVoice (voice);
-    if (slice.size() != idxs.size())
+    if (! processor.applyVoiceSlice (voice, slice))
     {
         setStatus ("Voice slice size mismatch — not applied");
         return;
     }
-    std::vector<int> indices (idxs.begin(), idxs.end());
-    processor.writeParamValues (indices.data(), slice.data(), (int) slice.size());
     setStatus (juce::String (kVoiceNames[voice]) + " voice applied");
 }
 
