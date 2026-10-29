@@ -19,7 +19,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libasound2-dev libjack-jackd2-dev \
-            libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev \
+            libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxcomposite-dev libxrender-dev \
             libfreetype6-dev libusb-1.0-0-dev
       - name: Fetch pinned sources
         run: |
