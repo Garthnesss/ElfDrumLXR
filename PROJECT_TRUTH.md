@@ -29,5 +29,6 @@ A DAW plugin (VST3/AU + standalone) that runs Erica Synths' open-source LXR-02 f
 
 ## Scope boundaries
 - In scope: desktop (Erica) engine + sequencer, VST3/AU/Standalone, macOS then Windows, .SND/.PAT/.SNG-era project compatibility as far as the firmware formats go.
+- After parity, a Phase 5 "Bonus" programme of host-side differentiators (kit ecosystem, creation tools, sequencing intelligence, performance/DAW features) extends the plugin beyond the hardware — see ROADMAP.md Phase 5.
 - Out of scope for v1: the LXR-1 (Sonic Potions 0.37) engine — its licence is non-commercial and conflicts with a clean GPL release; user-sample loading (a feature of that other engine / LXR02Open, not of the Erica desktop engine); iOS/AUv3; CLAP (evaluated in Phase 4 via clap-juce-extensions, not promised).
 - The disabled reverb (`USE_REVERB 0`) ships disabled in v1 for fidelity. Turning it on is a Phase 4 experiment, not a launch feature — it is off upstream for unknown reasons and the code path is unproven.

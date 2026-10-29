@@ -1,15 +1,16 @@
 # LXR Plugin — Status
 
-**Last updated:** 2026-10-29 (morph-fix session)
+**Last updated:** 2026-10-29 (morph-fix + doc-refresh session)
 **Phase:** Phase 0 COMPLETE + Phase 0 carry-over (FX/filter kits) CLOSED + Phase 1 (JUCE shell) IMPLEMENTED and gated on the VM; Mac build DONE (universal VST3/AU/Standalone built, ad-hoc signed, installed) with one environmental caveat: `auval` could not validate from the SSH session (see Mac section). Garth's Live test PASSED for load + trigger; his morph-slider report is FIXED (explicit target loading, below) and the fixed build is REINSTALLED on the Mac — his by-ear morph re-test is the remaining gate. Code remote main: `7ce4610` (morph fix; this STATUS commit sits on top).
 
 ## Where things stand
 - Upstream firmware — **EXAMINED** (cloned to `~/workspace/lxr-desktop-app`, commit a43cd4f; 46,255 LOC of C in Core; DSP ~15.8k LOC; kit = 247 params; sequencer/FX/MIDI specs extracted from source, Oct 28, 2026).
 - DSP host-compilability — **VERIFIED** (Muse compile test on the VM: 31/34 DSP files compile natively with a 2-header stub + `-D__fp16=float` + portable intrinsics; the 3 failures are the known oscillator/mixer/modulation-node stubs).
 - Rival implementation (PHX-D01) — **AUDITED, RUNS** (cloned to `~/workspace/PHX-D01`; its phx-render was built on this VM and rendered the INIT kit: all 6 voices, spectral profile verified — kick 54 Hz peak, snare centroid 6.3 kHz, cymbal 8.4 kHz, hihat 12.4 kHz. Evidence: `~/workspace/your_files/phx-d01-audit-init-render.wav` + `phx-d01-audit-render.png`). Its architecture validates this plan's engine approach; its gaps (standalone-only, reduced sequencer, no releases) define our differentiation.
-- Plugin code — **BUILT + RUNS headlessly on VM and Mac** (Phase 1, details below). JUCE 8.0.9 + r8brain pinned via `plugin/fetch-deps.sh`; formats VST3 + Standalone (Linux/Windows), + AU on Apple. Editor is the Phase 1 minimal shell (kit name, Load/Save .SND, 7 trigger buttons, morph slider).
+- Plugin code — **BUILT + RUNS headlessly on VM and Mac** (Phase 1, details below). JUCE 8.0.9 + r8brain pinned via `plugin/fetch-deps.sh`; formats VST3 + Standalone (Linux/Windows), + AU on Apple. Editor is the Phase 1 minimal shell (kit name, Load/Save .SND, 7 trigger buttons, morph slider + morph-target row since the Oct 29 fix).
 - Engine harness (Phase 0) — **RUNS on the Muse VM** (gcc 13, Linux x86-64): `scripts/fetch-vendor.sh` pins the firmware at a43cd4f into `vendor/lxr-02`; the Makefile copies it to `build/src`, applies `patches/01` (PHX-D01's oscillator overflow patch, verbatim), compiles all 44 engine sources against `shim/` + `engine/` (PHX-D01's wrapper adapted, module mod-matrix dropped) into `tools/lxr-render`.
-- Plan docs — **WRITTEN** (this set, Oct 28, 2026).
+- Bonus research — **LANDED** (Oct 29, 2026): a survey of modern software drum machines + LXR-02 owner requests was distilled into **ROADMAP Phase 5 "Bonus"** (post-parity differentiators, host-side first; Kit Blender / per-voice preset library + SD-card project librarian headline). All four canonical docs refreshed the same day (ARCHITECTURE's MIDI note-mapping corrected to the as-built design; PROJECT_TRUTH scope notes the Phase 5 programme).
+- Plan docs — **WRITTEN** (this set, Oct 28, 2026; refreshed Oct 29, 2026).
 
 ## Phase 0 gate evidence (Oct 28, 2026, Muse VM)
 - Intrinsics: **28/28 checks pass** (`make test`) — `__QADD16/__QSUB16/__SADD16/__SMLALD/__SMLALDX/__SSAT/__PKHBT` against hand-computed ARM-semantics vectors incl. saturation edges. (Writing the tests caught two errors in the *test vectors*, none in the shim; a transcription error in `__QSUB` was caught by diffing the shim against PHX-D01's original before building.)

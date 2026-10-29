@@ -17,12 +17,13 @@ can state its claim with evidence behind it.
 - Fixed-rate engine (44,140 Hz, 64-frame blocks) + FIFO + r8brain resampling to host rate; two stereo buses (DAC1/DAC2) with hardware routing semantics.
 - `.SND` import/export (drag & drop + file dialog); DAW state save/restore of kit bytes.
 - Gate: builds on Garth's Mac; loads in Ableton Live and passes a play test (MIDI clip triggers all voices, by ear — Garth); a kit exported from the plugin re-imports byte-identical (automated round-trip test), and the INIT kit rendered inside the plugin null-matches the Phase 0 CLI render at 44.1 kHz host rate (resampler bypassed identity check at matched rates within resampler tolerance).
+- **Status: COMPLETE** (Oct 28–29, 2026) — the gate's byte-identical kit round-trip clause was the last open item; closed Oct 29 by the automated save/reload harness (`plugin_morph_test save` mode: parameters 8..255 identical, name preserved). Garth's Live load + trigger test passed; the morph re-test after the Oct 29 fix is his remaining by-ear check (see STATUS.md).
 
 ## Phase 2 — "The panel"
 - Generated UI metadata from the firmware menu tables (labels, value lists, display types) committed via `tools/gen_pages`.
 - Editor laid out on the hardware's own menu structure: 6 voice pages (Osc/EG/Mod/FM/Transient/Filter/LFO/Mix), FX page, global page — knobs and value fields, no photo-skeuomorphism.
 - Kit browser: folders/cards of `.SND` as banks (slot order from filenames), prev/next, INIT, randomise-per-voice (a gap PHX and the hardware both leave open — small, high-value).
-- Morph slider wired to the firmware morph; per-voice faders (the hardware's 7 faders → 6 voices + master).
+- Morph slider wired to the firmware morph — **done early**: shipped in Phase 1; the Oct 29, 2026 fix added explicit morph-target loading (target name shown, "Load target .SND", drag-drop). Per-voice faders (the hardware's 7 faders → 6 voices + master) remain Phase 2.
 - Gate: every one of the 247 parameters is visible/editable in the UI (automated UI↔parameter-map cross-check against generated metadata), automatable, and a Live project saved and reloaded restores the exact kit (Garth-verified in Live).
 
 ## Phase 3 — "Sequencer parity"
@@ -37,6 +38,41 @@ can state its claim with evidence behind it.
 - Packaged releases: signed/notarised macOS installer + Windows zip, README + short manual, pluginval clean on both platforms.
 - Experiments, each behind its own mini-gate and **off** until passed: `USE_REVERB 1` (prove the reverb path complete + stable + good-sounding, or document why upstream disabled it and drop it); per-voice stem outputs (mixer patch — prove routing semantics unchanged on the main buses).
 - Gate: clean install on a fresh user account on Mac and Windows; pluginval strictness 5+ passes; release renders re-run through the Phase 0 golden suite unchanged.
+
+## Phase 5 — "Bonus" (post-parity differentiators, pick per release)
+Sequenced by leverage for this engine, not by research order. [H] = host-side, no DSP change. [P] = engine patch, flagged, needs its own gate.
+
+### Kit ecosystem
+- **Kit Blender + per-voice preset library [H]** — save/load single voices; assemble kits from voices across kits. The #1 verbatim LXR-02 owner request (Elektronauts); trivial here because a voice is a fixed slice of the 247 kit bytes. Ships with the Phase 2 panel if cheap.
+- **SD-card project librarian + shareable kit packs [H]** — browse PROJnn folders by real names/tags, sync hardware card ⇄ plugin library both ways, export/import kits+patterns as packs with author/artwork metadata. Owners cite kit/pattern management as the hardware's biggest pain.
+- **In-context audition browser [H]** — swap kit-keep-pattern / pattern-keep-kit at host tempo; favourites, playlists, history.
+- **Sonic similarity space [H]** — offline-render the kit library through the engine, map kits by rendered features (XO/Atlas-style space, but the pool is synth presets); "match this hit": analyse a dropped one-shot, suggest the closest kit/voice settings.
+
+### Creation
+- **Guarded kit randomizer [H]** — amount, per-section locks, never-silence floor (≥30% on level-critical params), never touch routings; per-voice or whole-kit. (Extends the Phase 2 per-voice randomise; guards proven on this engine by the LXR02XXL community mod.)
+- **Mutate / Breed [H]** — Patternarium-style: mutate current kit, breed two kits with per-voice inheritance, keep a lineage strip with undo.
+- **Morph XY / 4-corner surface [H]** — generalises the firmware morph: 2 or 4 kit corners, XY pad performance, freeze any blend as a new kit. (Depends on the Phase 1 morph fix.)
+
+### Sequencing intelligence (host layer over the firmware sequencer)
+- **Pattern generator + Remix [H]** — genre/density-seeded generation writing firmware pattern data, per-track locks, remix variations.
+- **Multi-track Euclidean composer [H]** — coordinated Euclidean across tracks with preview and undo (the hardware's Euclidean overwrites without undo).
+- **Groove extraction + humanize [H]** — timing/velocity templates from dropped MIDI/clips applied to patterns; per-track slop.
+- **Infinity / evolving mode + auto-fill [H]** — bar-counted mutations and scheduled fills at pattern boundaries.
+- **Ratio/logic conditional trigs [P]** — 1:2, 3:4, PRE/NEI/FILL beyond the firmware's probability — owner-requested verbatim; runtime evaluation makes it an engine patch.
+
+### Performance & DAW
+- **Performance page [H]** — assignable macros, CTRL-ALL, hold-to-mangle / release-to-restore snapshots (TEMP), momentary FILL with fast rolls (incl. 1/32 host-triggered).
+- **16 Pitches tonal mode [H]** — scale-locked pitch playing of voices 1–3 + snare from a MIDI keyboard/pads, recordable as step pitch (Move-style).
+- **Retro-capture [H]** — rolling buffer of the last N bars of incoming MIDI + tweaks, commit to a pattern on demand.
+- **Drag-out export [H]** — pattern → MIDI file/clip with parameter locks translated to CC/NRPN (probability resolved by a documented policy), per-voice one-shot WAVs, per-voice stems, whole-song arrangement.
+- **Live voice display [H]** — rendered waveform/spectrum per triggered voice with pitch-curve readout (Kick-3-style analyser, but the input is our own synthesis).
+
+### Engine-patch headline
+- **Sequencer depth pack [P]** — >2 lock lanes per step, finer micro-timing resolution, random-LFO-fresh-value-per-trigger (on Erica's own firmware-ideas list). Bundle with ratio trigs above.
+(Reverb unlock already lives in Phase 4 experiments.)
+
+### Explicitly skipped (researched and rejected)
+Sample import/layering/slicing (violates the synthesis-first premise — Erica refused it for the hardware too), field-recording generation (Life), stem separation, acoustic/round-robin libraries, built-in mastering chains, standalone groovebox environments. Audio input is welcome only as *analysis* (groove extraction, match-this-hit), never as a sound source.
 
 ## Explicitly later (not this roadmap)
 - LXR-1 (0.37) engine — non-commercial licence; would need its own separate, non-commercial artifact and legal care. Un-park if Garth wants a personal-use-only build.
