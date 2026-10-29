@@ -35,6 +35,7 @@ can state its claim with evidence behind it.
 - Pattern editor on the firmware's data model: main steps + substep detail, per-step velocity/note/probability, **two parameter locks**, flam + shift timing, per-track length, track mute, rolls, shuffle, Euclidean generator, 64-pattern set, chaining + song mode.
 - `.PAT` import/export through the ported preset-manager layouts.
 - Gate: (1) a pattern authored in the plugin exports a `.PAT` that the ported firmware parser reads back into an identical pattern set (automated); (2) a fixed pattern + kit render an identical trigger-event log (voice, time, velocity, note, p-lock changes) in the plugin and in a reference harness driving `seq_tick()` directly; (3) checklist diff vs PHX-D01's sequencer (32 steps, no probability/p-locks/substeps) shows every gap closed; (4) Garth plays it in Live against host transport, by ear.
+- **Status: IMPLEMENTED + VM-gated Oct 29, 2026; Mac rebuilt + reinstalled.** Gates (1)–(3) PASS with evidence in STATUS (trigger logs byte-identical, 59 events; PHX checklist all-pass; .PAT round-trip byte-exact incl. V1/V2 gating) via `tools/seq-gate.sh`. Remaining: gate (4), Garth's by-ear Live check.
 
 ## Phase 4 — "Reach & polish"
 - Windows x64 build (VST3 + Standalone); CLAP evaluated via clap-juce-extensions (ship only if it passes the same gates without a second codebase).
