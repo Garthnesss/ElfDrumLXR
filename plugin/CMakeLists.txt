@@ -290,6 +290,32 @@ target_link_libraries(plugin_panel_test PRIVATE
     juce::juce_dsp
     juce::juce_events)
 
+# Phase 5 gate harness: one mode per bonus-programme item (see
+# render/Phase5Test.cpp). Same processor + Phase 5 layer as the plugin.
+juce_add_console_app(plugin_phase5_test PRODUCT_NAME "plugin-phase5-test")
+target_sources(plugin_phase5_test PRIVATE
+    render/Phase5Test.cpp
+    src/PluginProcessor.cpp
+    src/Phase5.cpp
+    src/EngineHost.cpp src/EngineSwap.cpp)
+target_include_directories(plugin_phase5_test PRIVATE
+    src
+    vendor/r8brain-free-src)
+target_compile_definitions(plugin_phase5_test PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    ELF_NO_EDITOR=1)
+target_link_libraries(plugin_phase5_test PRIVATE
+    ${LXR_ENGINE_LINK}
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_dsp
+    juce::juce_events)
+
 # Phase 4 (5) gate harness: two processors, interleaved blocks (see
 # tools/instance-gate.sh). Same engine + processor sources as the plugin.
 juce_add_console_app(plugin_instance_test PRODUCT_NAME "ElfDrumLXR Instance Test")
