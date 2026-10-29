@@ -20,11 +20,14 @@ can state its claim with evidence behind it.
 - **Status: COMPLETE** (Oct 28–29, 2026) — the gate's byte-identical kit round-trip clause was the last open item; closed Oct 29 by the automated save/reload harness (`plugin_morph_test save` mode: parameters 8..255 identical, name preserved). Garth's Live load + trigger test passed; the morph re-test after the Oct 29 fix is his remaining by-ear check (see STATUS.md).
 
 ## Phase 2 — "The panel"
-- Generated UI metadata from the firmware menu tables (labels, value lists, display types) committed via `tools/gen_pages`.
-- Editor laid out on the hardware's own menu structure: 6 voice pages (Osc/EG/Mod/FM/Transient/Filter/LFO/Mix), FX page, global page — knobs and value fields, no photo-skeuomorphism.
-- Kit browser: folders/cards of `.SND` as banks (slot order from filenames), prev/next, INIT, randomise-per-voice (a gap PHX and the hardware both leave open — small, high-value).
-- Morph slider wired to the firmware morph — **done early**: shipped in Phase 1; the Oct 29, 2026 fix added explicit morph-target loading (target name shown, "Load target .SND", drag-drop). Per-voice faders (the hardware's 7 faders → 6 voices + master) remain Phase 2.
-- Gate: every one of the 247 parameters is visible/editable in the UI (automated UI↔parameter-map cross-check against generated metadata), automatable, and a Live project saved and reloaded restores the exact kit (Garth-verified in Live).
+- Generated UI metadata from the firmware menu tables (labels, value lists, display types) committed via `tools/gen_pages`. ✅
+- Editor laid out on the hardware's own menu structure: 6 voice pages (Osc/EG/Mod/FM/Transient/Filter/LFO/Mix), FX page, global page — knobs and value fields, no photo-skeuomorphism. ✅
+- Kit browser: folders/cards of `.SND` as banks (slot order from filenames), prev/next, INIT, randomise-per-voice (a gap PHX and the hardware both leave open — small, high-value). ✅ (randomise shipped guarded: routing/mod-target keep-set + 30% level floor)
+- Morph slider wired to the firmware morph — **done early**: shipped in Phase 1; the Oct 29, 2026 fix added explicit morph-target loading (target name shown, "Load target .SND", drag-drop). Per-voice faders (the hardware's 7 faders → 6 voices + master). ✅ (Phase 2)
+- Pulled forward from Phase 5: **per-voice presets** (Copy/Paste/Save/Load Voice, `.lxv` slice format) — the Kit Blender groundwork. ✅
+- Timeboxed per-instance engine investigation: state surface fully enumerated (157 symbols / 317,047 B, no heap); swap deferred by design (see ARCHITECTURE) — singleton kept.
+- Gate: every one of the 247 parameters is visible/editable in the UI (automated UI↔parameter-map cross-check against generated metadata ✅ — `tools/check_metadata.py` + `plugin_panel_test`), automatable ✅, and a Live project saved and reloaded restores the exact kit (Garth-verified in Live — **the one remaining clause**).
+- **Status: IMPLEMENTED + VM-gated Oct 29, 2026; Mac rebuilt + reinstalled.** Remaining: Garth's Live save/reload + by-eye gate (see STATUS.md).
 
 ## Phase 3 — "Sequencer parity"
 - Discovery first (one pass, written up in STATUS): exact main-step/substep editing semantics in the desktop firmware, song storage format, chaining rules — from `sequencer.c` + `presetManager.c`, not from the manual.
@@ -43,7 +46,7 @@ can state its claim with evidence behind it.
 Sequenced by leverage for this engine, not by research order. [H] = host-side, no DSP change. [P] = engine patch, flagged, needs its own gate.
 
 ### Kit ecosystem
-- **Kit Blender + per-voice preset library [H]** — save/load single voices; assemble kits from voices across kits. The #1 verbatim LXR-02 owner request (Elektronauts); trivial here because a voice is a fixed slice of the 247 kit bytes. Ships with the Phase 2 panel if cheap.
+- **Kit Blender + per-voice preset library [H]** — save/load single voices; assemble kits from voices across kits. The #1 verbatim LXR-02 owner request (Elektronauts); trivial here because a voice is a fixed slice of the 247 kit bytes. **Groundwork SHIPPED with Phase 2** (per-voice Copy/Paste/Save/Load + the `.lxv` format); what remains here is the library/blender UI layer on top of it.
 - **SD-card project librarian + shareable kit packs [H]** — browse PROJnn folders by real names/tags, sync hardware card ⇄ plugin library both ways, export/import kits+patterns as packs with author/artwork metadata. Owners cite kit/pattern management as the hardware's biggest pain.
 - **In-context audition browser [H]** — swap kit-keep-pattern / pattern-keep-kit at host tempo; favourites, playlists, history.
 - **Sonic similarity space [H]** — offline-render the kit library through the engine, map kits by rendered features (XO/Atlas-style space, but the pool is synth presets); "match this hit": analyse a dropped one-shot, suggest the closest kit/voice settings.

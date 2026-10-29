@@ -1,4 +1,4 @@
-# ElfDrumLXR plugin (Phase 1)
+# ElfDrumLXR plugin (Phase 2)
 
 JUCE shell around the Phase 0 engine harness. Formats: VST3 + Standalone everywhere,
 plus AU on macOS. Product "ElfDrumLXR", company "Elf", manufacturer code `ElfM`,
@@ -87,10 +87,31 @@ the Phase 0 decision) to plain float.
   pattern change) act on the firmware sequencer state, which the plugin doesn't drive
   until Phase 3.
 
-## Known Phase 1 limitations
+## Phase 2 panel
+
+- The editor is generated from the firmware's own menu tables (`tools/gen_pages.sh` →
+  `src/ParamMetadata.generated.h`): 8 tabs (6 voices with their firmware sections,
+  FX, Global/Mix), every one of the 247 kit parameters bound through APVTS
+  attachments under its real name and range. Regenerate the metadata with
+  `tools/gen_pages.sh`; verify it with `tools/check_metadata.py` and
+  `plugin_panel_test metadata`.
+- Kit browser (left strip): pick a folder of `.SND` files (remembered in the
+  plugin's properties), click to load, prev/next to step, INIT in the header.
+- Per-voice presets: Copy/Paste/Save/Load Voice on each voice page, `.lxv`
+  format (see ARCHITECTURE.md); voice files default to `~/Documents/ElfDrumLXR/voices/`.
+- Guarded randomise per voice + whole-kit (routing/mod-target keep-set, level
+  params floored at 30% of range).
+- Performance faders on the Global/Mix page (6 voices via the engine's fader
+  path + master trim) — session state (format v3), not kit data.
+- Headless proofs: `plugin_panel_test` (metadata / slice / state / randomise modes).
+
+## Known limitations
 
 - The engine is a process-wide singleton: multiple plugin instances in one host share one
   engine (the firmware's globals-everywhere design; PHX-D01 has the same constraint).
+  The Phase 2 investigation enumerated the full mutable state (157 symbols,
+  317,047 bytes, no heap) — a snapshot swap is feasible in size but deferred;
+  see ARCHITECTURE.md.
 - Incoming parser CCs change voice state directly in the firmware structs; the APVTS
   bridge does not reflect them back into the host's parameter view (host automation wins
   the next time it moves — the bridge never reverts a CC change on its own).
