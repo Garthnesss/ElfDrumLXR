@@ -31,7 +31,7 @@ jobs:
           make test
       - name: Plugin build
         run: |
-          cmake -B plugin/build -DCMAKE_BUILD_TYPE=Release -G Ninja
+          cmake -S plugin -B plugin/build -DCMAKE_BUILD_TYPE=Release -G Ninja
           cmake --build plugin/build -j
       - name: Headless plugin gates
         run: |
@@ -52,7 +52,7 @@ jobs:
           ./plugin/fetch-deps.sh
       - name: Plugin build (universal)
         run: |
-          cmake -B plugin/build -DCMAKE_BUILD_TYPE=Release \
+          cmake -S plugin -B plugin/build -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
           cmake --build plugin/build -j
       - name: Panel harness
@@ -72,7 +72,7 @@ jobs:
       - name: Plugin build (VST3 + Standalone, MSVC x64)
         shell: pwsh
         run: |
-          cmake -B plugin/build -DCMAKE_BUILD_TYPE=Release -A x64
+          cmake -S plugin -B plugin/build -DCMAKE_BUILD_TYPE=Release -A x64
           cmake --build plugin/build --config Release -j
       - name: Panel harness
         shell: pwsh
