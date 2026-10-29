@@ -163,3 +163,28 @@ target_link_libraries(plugin_morph_test PRIVATE
     juce::juce_core
     juce::juce_data_structures
     juce::juce_events)
+
+# Phase 2 panel harness: metadata cross-check (APVTS side), voice-slice
+# byte+render proof, state round-trip, guarded-randomise guards.
+juce_add_console_app(plugin_panel_test PRODUCT_NAME "plugin-panel-test")
+target_sources(plugin_panel_test PRIVATE
+    render/PanelTest.cpp
+    src/PluginProcessor.cpp
+    src/EngineHost.cpp)
+target_include_directories(plugin_panel_test PRIVATE
+    src
+    vendor/r8brain-free-src)
+target_compile_definitions(plugin_panel_test PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    ELF_NO_EDITOR=1)
+target_link_libraries(plugin_panel_test PRIVATE
+    lxr_engine
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_dsp
+    juce::juce_events)
