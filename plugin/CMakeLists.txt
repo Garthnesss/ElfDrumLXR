@@ -51,6 +51,16 @@ list(REMOVE_ITEM ENGINE_C_SOURCES "${ENGINE_SRC}/Core/Src/Soundengine/MIDI/Uart.
 # the per-instance swap's census (tools/gen_census.py) is taken over the
 # archive, so every member object — including ones no host code references,
 # e.g. MidiMessages.c — must actually be present in the final binary.
+# The engine archive is linked WHOLE on Linux only: the per-instance
+# swap's census is taken over the archive, so every member object must be
+# present in the final binary (see EngineSwap). Elsewhere the swap is
+# unavailable by design (ELF-only) and plain archive linking is correct.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(LXR_ENGINE_LINK "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>")
+else()
+    set(LXR_ENGINE_LINK lxr_engine)
+endif()
+
 add_library(lxr_engine STATIC
     ${ENGINE_C_SOURCES}
     "${CMAKE_CURRENT_SOURCE_DIR}/../engine/engine.c"
@@ -110,7 +120,7 @@ target_compile_definitions(ElfDrumLXR PRIVATE
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0)
 target_link_libraries(ElfDrumLXR PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
+    ${LXR_ENGINE_LINK}
     juce::juce_audio_basics
     juce::juce_audio_devices
     juce::juce_audio_processors
@@ -139,7 +149,7 @@ target_compile_definitions(plugin_render PRIVATE
     JUCE_USE_CURL=0
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_render PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
+    ${LXR_ENGINE_LINK}
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors
@@ -162,7 +172,7 @@ target_compile_definitions(plugin_morph_test PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_morph_test PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
+    ${LXR_ENGINE_LINK}
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors
@@ -191,7 +201,7 @@ target_compile_definitions(plugin_seq_test PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_seq_test PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
+    ${LXR_ENGINE_LINK}
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors
@@ -218,7 +228,7 @@ target_compile_definitions(plugin_stem_test PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_stem_test PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
+    ${LXR_ENGINE_LINK}
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors
@@ -269,7 +279,7 @@ target_compile_definitions(plugin_panel_test PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_panel_test PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
+    ${LXR_ENGINE_LINK}
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors
@@ -294,7 +304,7 @@ target_compile_definitions(plugin_instance_test PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_instance_test PRIVATE
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
+    ${LXR_ENGINE_LINK}
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors

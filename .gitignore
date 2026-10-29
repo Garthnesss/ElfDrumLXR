@@ -2,3 +2,4 @@ build/
 build-*/
 vendor/
 *.wav
+dist/
