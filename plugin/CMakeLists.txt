@@ -51,6 +51,7 @@ add_library(lxr_engine STATIC
     ${ENGINE_C_SOURCES}
     "${CMAKE_CURRENT_SOURCE_DIR}/../engine/engine.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../engine/stubs.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../engine/seqbridge.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../engine/kit.c")
 set_target_properties(lxr_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(lxr_engine PUBLIC

@@ -51,7 +51,10 @@ void lxr_init(void)
 	activeParameters[PAR_MIDI_FILT_TX] = 15;	/* all */
 	activeParameters[PAR_MIDI_FILT_RX] = 15;	/* all */
 	activeParameters[PAR_BAR_RESET_MODE] = 1;
-	activeParameters[PAR_PATTERN_MODE] = 1;		/* auto */
+	activeParameters[PAR_PATTERN_MODE] = 0;		/* Phase 3: was 1 ("auto") in Phases 0–2. With the sequencer
+	   live, "auto" makes every pattern switch call the (stubbed) kit autoload after switching the FX bus
+	   off — a kit load that can never complete in the host build, leaving FX dead. Mode 0 is the hardware's
+	   own "patterns don't load kits" setting; the DAW owns kit state in the plugin. */
 	initDrumVoice();
 	Snare_init();
 	HiHat_init();

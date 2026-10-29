@@ -14,7 +14,7 @@ INC := $(B)/src/Core/Inc
 FP16 ?= _Float16
 ENGINE := $(shell cd $(VENDOR)/Core/Src 2>/dev/null && ls Soundengine/DSPAudio/*.c Soundengine/DSPAudio/FX/*.c Soundengine/DSPAudio/FX/*/*.c \
             Soundengine/FxBus.c Soundengine/MIDI/*.c Soundengine/Sequencer/*.c | grep -v -e MIDI/Uart.c)
-OBJS := $(patsubst %.c,$(B)/obj/%.o,$(ENGINE)) $(B)/obj/engine/engine.o $(B)/obj/engine/stubs.o $(B)/obj/engine/kit.o $(B)/obj/menu/Cc2Text.o
+OBJS := $(patsubst %.c,$(B)/obj/%.o,$(ENGINE)) $(B)/obj/engine/engine.o $(B)/obj/engine/stubs.o $(B)/obj/engine/kit.o $(B)/obj/engine/seqbridge.o $(B)/obj/menu/Cc2Text.o
 CFLAGS := -std=gnu11 -O2 -w -D__fp16=$(FP16) '-Dsection(x)=unused' -Ishim -Iengine -I$(INC) -I$(INC)/Soundengine -I$(SRC)
 
 all: $(B)/lxr-render
