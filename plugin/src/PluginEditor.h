@@ -19,8 +19,9 @@ public:
     void filesDropped (const juce::StringArray& files, int x, int y) override;
 
 private:
+    enum class KitChoice { load, save, loadTarget };
     void timerCallback() override;
-    void chooseKit (bool save);
+    void chooseKit (KitChoice choice);
 
     ElfDrumLXRProcessor& processor;
 
@@ -29,6 +30,9 @@ private:
     std::array<juce::TextButton, 7> triggerButtons;
     juce::Slider morphSlider;
     juce::Label morphLabel;
+    juce::Label morphTargetCaption, morphTargetLabel;
+    juce::TextButton loadTargetButton { "Load target .SND" };
+    juce::Rectangle<int> morphDropZone;   // drops here set the morph target, not the kit
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> morphAttachment;
     std::unique_ptr<juce::FileChooser> chooser;
 

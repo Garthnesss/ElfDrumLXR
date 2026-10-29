@@ -43,10 +43,15 @@ the Phase 0 decision) to plain float.
   block and pushes changes through the wrapper's CC-replay/edit-diff (`lxr_load_params` /
   `lxr_edit_params`), the same path kit loads use. Morph crossfades the current kit toward
   a morph-target kit with the firmware's own morph interpolation (`lxr_morph_kit`); loading
-  a kit makes the *previous* kit the morph target.
-- **State**: `getStateInformation` writes a version byte, the 247 base-kit bytes, the 247
-  morph-target bytes, the morph amount and the 8 kit-name bytes — the raw firmware data,
-  restorable byte-for-byte. `.SND` export writes the same 255-byte layout the hardware
+  a kit makes the *previous* kit the morph target, and the editor's "Morph target" row
+  names the target and loads one explicitly ("Load target .SND", or drop a kit onto the
+  morph rows). At startup the target is the INIT kit itself — the editor shows that, so a
+  dead-feeling slider is never a mystery. Note the firmware's own rule, kept faithfully:
+  morphing never touches voice routing (PAR_AUDIO_OUT1..6), modulation targets or velocity
+  destinations, so a kit that differs only in routing is reached only by loading it.
+- **State**: `getStateInformation` writes a version byte (v2; v1 still loads), the 247
+  base-kit bytes, the 247 morph-target bytes, the morph amount, the 8 kit-name bytes and
+  the 8 morph-target-name bytes — the raw firmware data, restorable byte-for-byte. `.SND` export writes the same 255-byte layout the hardware
   uses (8-byte name + 247 params); import accepts 255-byte desktop kits and 309-byte
   module kits (matrix tail ignored).
 - **Threading**: the engine is a single global state machine (firmware design) and lives

@@ -15,8 +15,8 @@ ElfDrumLXRProcessorEditor::ElfDrumLXRProcessorEditor (ElfDrumLXRProcessor& p)
     kitNameLabel.setFont (juce::FontOptions (15.0f));
     addAndMakeVisible (kitNameLabel);
 
-    loadButton.onClick = [this] { chooseKit (false); };
-    saveButton.onClick = [this] { chooseKit (true); };
+    loadButton.onClick = [this] { chooseKit (KitChoice::load); };
+    saveButton.onClick = [this] { chooseKit (KitChoice::save); };
     addAndMakeVisible (loadButton);
     addAndMakeVisible (saveButton);
 
@@ -35,7 +35,15 @@ ElfDrumLXRProcessorEditor::ElfDrumLXRProcessorEditor (ElfDrumLXRProcessor& p)
     morphAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processor.getApvts(), "morph", morphSlider);
 
-    setSize (560, 300);
+    morphTargetCaption.setText ("Morph target:", juce::dontSendNotification);
+    addAndMakeVisible (morphTargetCaption);
+    morphTargetLabel.setText (processor.getMorphTargetName(), juce::dontSendNotification);
+    morphTargetLabel.setFont (juce::FontOptions (15.0f));
+    addAndMakeVisible (morphTargetLabel);
+    loadTargetButton.onClick = [this] { chooseKit (KitChoice::loadTarget); };
+    addAndMakeVisible (loadTargetButton);
+
+    setSize (560, 344);
     startTimerHz (4);
 }
 
@@ -46,22 +54,28 @@ void ElfDrumLXRProcessorEditor::timerCallback()
     const auto name = processor.getKitName();
     if (kitNameLabel.getText() != name)
         kitNameLabel.setText (name, juce::dontSendNotification);
+    const auto target = processor.getMorphTargetName();
+    if (morphTargetLabel.getText() != target)
+        morphTargetLabel.setText (target, juce::dontSendNotification);
 }
 
-void ElfDrumLXRProcessorEditor::chooseKit (bool save)
+void ElfDrumLXRProcessorEditor::chooseKit (KitChoice choice)
 {
+    const bool save = choice == KitChoice::save;
     chooser = std::make_unique<juce::FileChooser> (
-        save ? "Save kit (.SND)" : "Load kit (.SND)",
+        save ? "Save kit (.SND)"
+             : (choice == KitChoice::loadTarget ? "Load morph target kit (.SND)" : "Load kit (.SND)"),
         juce::File::getSpecialLocation (juce::File::userHomeDirectory),
         "*.SND;*.snd");
     const int flags = save ? juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
                            : juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
-    chooser->launchAsync (flags, [this, save] (const juce::FileChooser& fc)
+    chooser->launchAsync (flags, [this, choice] (const juce::FileChooser& fc)
     {
         const auto file = fc.getResult();
         if (file == juce::File()) return;
-        if (save) processor.saveKitFile (file);
-        else      processor.loadKitFile (file);
+        if (choice == KitChoice::save)            processor.saveKitFile (file);
+        else if (choice == KitChoice::loadTarget) processor.loadMorphTargetFile (file);
+        else                                      processor.loadKitFile (file);
     });
 }
 
@@ -73,12 +87,15 @@ bool ElfDrumLXRProcessorEditor::isInterestedInFileDrag (const juce::StringArray&
     return false;
 }
 
-void ElfDrumLXRProcessorEditor::filesDropped (const juce::StringArray& files, int, int)
+void ElfDrumLXRProcessorEditor::filesDropped (const juce::StringArray& files, int x, int y)
 {
+    // Dropping onto the morph rows sets the morph target; anywhere else loads the kit.
+    const bool asTarget = morphDropZone.contains (x, y);
     for (const auto& f : files)
         if (f.endsWithIgnoreCase (".snd"))
         {
-            processor.loadKitFile (juce::File (f));
+            if (asTarget) processor.loadMorphTargetFile (juce::File (f));
+            else          processor.loadKitFile (juce::File (f));
             break;
         }
 }
@@ -109,6 +126,14 @@ void ElfDrumLXRProcessorEditor::resized()
     }
     area.removeFromTop (16);
     auto morphRow = area.removeFromTop (28);
+    const auto morphRowFull = morphRow;
     morphLabel.setBounds (morphRow.removeFromLeft (60));
     morphSlider.setBounds (morphRow);
+    area.removeFromTop (8);
+    auto targetRow = area.removeFromTop (30);
+    morphDropZone = morphRowFull.getUnion (targetRow).expanded (0, 4);
+    morphTargetCaption.setBounds (targetRow.removeFromLeft (110));
+    loadTargetButton.setBounds (targetRow.removeFromRight (150));
+    targetRow.removeFromRight (8);
+    morphTargetLabel.setBounds (targetRow);
 }

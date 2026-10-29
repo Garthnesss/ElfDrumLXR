@@ -10,7 +10,7 @@ extern "C" {
 }
 
 namespace {
-constexpr uint8_t kStateVersion = 1;
+constexpr uint8_t kStateVersion = 2;   // v2 appends the morph target's name (v1 still loads)
 // GM drum map, used ONLY while the firmware's per-voice note parameters are all at their
 // stock placeholder value (48) — see processBlock. Same map PHX-D01 ships (host/midi.c).
 constexpr int kGmMap[7] = { 36, 45, 50, 38, 39, 42, 46 };
@@ -45,6 +45,7 @@ ElfDrumLXRProcessor::ElfDrumLXRProcessor()
     std::array<char, 8> n {};
     std::memcpy (n.data(), initkit::name, std::min (strlen (initkit::name), (size_t) 8));
     setKitNameBytes (n);
+    setMorphTargetNameBytes (n);   // startup target IS the current kit — the editor shows it
 }
 
 ElfDrumLXRProcessor::~ElfDrumLXRProcessor()
@@ -59,10 +60,22 @@ void ElfDrumLXRProcessor::setKitNameBytes (const std::array<char, 8>& n)
     kitNameBytes = n;
 }
 
+void ElfDrumLXRProcessor::setMorphTargetNameBytes (const std::array<char, 8>& n)
+{
+    const juce::ScopedLock sl (nameLock);
+    morphTargetNameBytes = n;
+}
+
 juce::String ElfDrumLXRProcessor::getKitName()
 {
     const juce::ScopedLock sl (nameLock);
     return juce::String (kitNameBytes.data(), 8).trimEnd();
+}
+
+juce::String ElfDrumLXRProcessor::getMorphTargetName()
+{
+    const juce::ScopedLock sl (nameLock);
+    return juce::String (morphTargetNameBytes.data(), 8).trimEnd();
 }
 
 //==============================================================================
@@ -99,9 +112,41 @@ void ElfDrumLXRProcessor::postKitRequest (std::unique_ptr<KitRequest> req)
 
 void ElfDrumLXRProcessor::applyKitRequest (KitRequest& req)
 {
+    if (req.targetOnly)
+    {
+        // Explicit morph target (editor's "Load target .SND"): the current kit and the
+        // APVTS bridge are untouched; re-apply at the current morph amount so a target
+        // swapped in mid-morph is heard immediately.
+        morphTargetKit = req.params;
+        setMorphTargetNameBytes (req.name);
+        const float morph = morphParamPtr->load();
+        std::array<uint8_t, kNumKitParams> desired;
+        if (morph > 0.001f)
+            lxr_morph_kit (baseKit.data(), morphTargetKit.data(),
+                           (uint8_t) juce::roundToInt (morph * 255.0f), desired.data());
+        else
+            desired = baseKit;
+        host.loadKit (desired.data());
+        lastBaseKit = baseKit;
+        lastSentKit = desired;
+        lastMorph = morph;
+        engineKitLoaded = true;
+        return;
+    }
+
     const auto oldBase = baseKit;
     baseKit = req.params;
-    morphTargetKit = req.hasTarget ? req.target : oldBase;   // file loads: morph back to the previous kit
+    if (req.hasTarget)
+    {
+        morphTargetKit = req.target;                          // state restore
+        setMorphTargetNameBytes (req.targetName);
+    }
+    else
+    {
+        morphTargetKit = oldBase;                             // file loads: morph back to the previous kit
+        const juce::ScopedLock sl (nameLock);
+        morphTargetNameBytes = kitNameBytes;                  // ...whose name is still the old one here
+    }
     setKitNameBytes (req.name);
     if (req.hasMorph)
         lastMorph = -1.0f;   // force the bridge to re-evaluate with the restored morph below
@@ -295,6 +340,19 @@ bool ElfDrumLXRProcessor::loadKitFile (const juce::File& file)
     return true;
 }
 
+bool ElfDrumLXRProcessor::loadMorphTargetFile (const juce::File& file)
+{
+    juce::MemoryBlock data;
+    if (! file.loadFileAsData (data) || data.getSize() < 255)
+        return false;
+    auto req = std::make_unique<KitRequest>();
+    req->targetOnly = true;
+    std::memcpy (req->name.data(), data.getData(), 8);
+    std::memcpy (req->params.data(), (const uint8_t*) data.getData() + 8, kNumKitParams);
+    postKitRequest (std::move (req));
+    return true;
+}
+
 bool ElfDrumLXRProcessor::saveKitFile (const juce::File& file)
 {
     // Write the current kit exactly as the hardware does: 8 name bytes + 247 parameter bytes.
@@ -339,18 +397,28 @@ void ElfDrumLXRProcessor::getStateInformation (juce::MemoryBlock& destData)
     out.writeFloat (morphParamPtr->load());
     const juce::ScopedLock sl (nameLock);
     out.write (kitNameBytes.data(), 8);
+    out.write (morphTargetNameBytes.data(), 8);   // v2 addition
 }
 
 void ElfDrumLXRProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     juce::MemoryInputStream in (data, (size_t) sizeInBytes, false);
-    if (in.readByte() != (char) kStateVersion)
+    const auto version = (uint8_t) in.readByte();
+    if (version != 1 && version != (char) kStateVersion)
         return;
     auto req = std::make_unique<KitRequest>();
     if (in.read (req->params.data(), kNumKitParams) != kNumKitParams) return;
     if (in.read (req->target.data(), kNumKitParams) != kNumKitParams) return;
     req->morph = in.readFloat();
     if (in.read (req->name.data(), 8) != 8) return;
+    if (version == (char) kStateVersion)
+    {
+        if (in.read (req->targetName.data(), 8) != 8) return;
+    }
+    else
+    {
+        req->targetName = req->name;   // v1 saved no target name; best available label
+    }
     req->hasTarget = true;
     req->hasMorph = true;
     if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter ("morph")))

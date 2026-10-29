@@ -45,9 +45,11 @@ public:
 
     // --- message-thread API (editor, file layer) ---
     bool loadKitFile (const juce::File& file);          // .SND (255 B, or 309 B module kit)
+    bool loadMorphTargetFile (const juce::File& file);  // set the morph target kit explicitly
     bool saveKitFile (const juce::File& file);          // writes name + current kit bytes (255 B)
     void triggerVoice (int voice);                      // 0..6 (6 = open hihat)
     juce::String getKitName();
+    juce::String getMorphTargetName();
     juce::AudioProcessorValueTreeState& getApvts() { return apvts; }
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -59,8 +61,10 @@ private:
         std::array<uint8_t, kNumKitParams> params {};
         std::array<uint8_t, kNumKitParams> target {};
         std::array<char, 8> name {};
+        std::array<char, 8> targetName {};
         bool hasTarget = false;
         bool hasMorph = false;
+        bool targetOnly = false;   // loadMorphTargetFile: params/name describe the target
         float morph = 0.0f;
     };
 
@@ -97,7 +101,9 @@ private:
 
     juce::CriticalSection nameLock;
     std::array<char, 8> kitNameBytes {};
+    std::array<char, 8> morphTargetNameBytes {};
     void setKitNameBytes (const std::array<char, 8>& n);
+    void setMorphTargetNameBytes (const std::array<char, 8>& n);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ElfDrumLXRProcessor)
 };

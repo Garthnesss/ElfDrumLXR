@@ -140,3 +140,26 @@ target_link_libraries(plugin_render PRIVATE
     juce::juce_core
     juce::juce_data_structures
     juce::juce_events)
+
+# Morph/save proof harness (see render/PluginMorphTest.cpp).
+juce_add_console_app(plugin_morph_test PRODUCT_NAME "plugin-morph-test")
+target_sources(plugin_morph_test PRIVATE
+    render/PluginMorphTest.cpp
+    src/PluginProcessor.cpp
+    src/EngineHost.cpp)
+target_include_directories(plugin_morph_test PRIVATE
+    src
+    vendor/r8brain-free-src)
+target_compile_definitions(plugin_morph_test PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    ELF_NO_EDITOR=1)
+target_link_libraries(plugin_morph_test PRIVATE
+    lxr_engine
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_events)
