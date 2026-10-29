@@ -1,0 +1,44 @@
+Patch 02 — Neutralize ARM section attributes for host builds
+
+Why: config.h / main.h place code and data in STM32 ITCM/DTCM via
+__attribute__((section(".itcm_text"))) etc. Host ELF builds tolerate the
+-Dsection(x)=unused shim define, but Mach-O requires a "segment,section"
+specifier, so Apple clang rejects the bare names outright — and CMake 4.x
+silently drops the function-like -D define from generated makefiles.
+Rewriting the three placement macros to __attribute__((unused)) in the
+copied build tree is target-agnostic: placement is meaningless on a host
+CPU, and `unused` keeps the declarations valid everywhere. (The -D shim
+define stays in place as a second belt for any other section() use.)
+
+--- a/Core/Inc/Soundengine/config.h	2026-10-29 00:56:19.044466513 +0000
++++ b/Core/Inc/Soundengine/config.h	2026-10-29 00:56:25.391385209 +0000
+@@ -84,11 +84,11 @@
+ //typedef  uint8_t bool;
+ 
+ // Helper to declare variable in CCM memory, pre-loaded from flash at startup
+-#define INDTCM __attribute__ ((section(".dtcm")))
++#define INDTCM __attribute__ ((unused))
+ 
+ // Helper to declare variable in CCM memory that is zeroed at startup
+-#define INDTCMZ __attribute__ ((section(".dtcmz")))
++#define INDTCMZ __attribute__ ((unused))
+ 
+-#define IN_ITCM_RAM __attribute__((section(".itcm_text")))
++#define IN_ITCM_RAM __attribute__((unused))
+ 
+ #endif /* CONFIG_H_ */
+--- a/Core/Inc/main.h	2026-10-29 00:56:19.063979068 +0000
++++ b/Core/Inc/main.h	2026-10-29 00:56:25.392993514 +0000
+@@ -117,10 +117,10 @@
+ 
+ 
+ // Helper to declare variable in CCM memory, pre-loaded from flash at startup
+-#define INDTCM __attribute__ ((section(".dtcm")))
++#define INDTCM __attribute__ ((unused))
+ 
+ // Helper to declare variable in CCM memory that is zeroed at startup
+-#define INDTCMZ __attribute__ ((section(".dtcmz")))
++#define INDTCMZ __attribute__ ((unused))
+ /* USER CODE END Private defines */
+ 
+ #ifdef __cplusplus
