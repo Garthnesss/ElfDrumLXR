@@ -25,19 +25,19 @@ struct KitParam {
 };
 
 static const char *const kNamesFilter[] = { "-", "LP", "HP", "BP", "UBP", "Nch", "Pek", "LP2", "off", };
-static const char *const kNamesWaveform[] = { "Tri", "Rec", "PWM", "", "4/1", "1/1", };
-static const char *const kNamesAudioOut[] = { "t1", "2", "", "", "", "", "", };
-static const char *const kNamesSyncRates[] = { "4/1", "1/1", "1/3", "1/6", "12", "32", "", "", "1/1", "1/4", "16", "32", };
-static const char *const kNamesLfoWaves[] = { "tri", "sdn", "rnd", "xdn", "", "", "", "", };
-static const char *const kNamesRetrigger[] = { "v1", "v3", "v5", "", "p2", "p4", "p6", };
-static const char *const kNamesTransient[] = { "Ofs", "Ck2", "Kik", "Drp", "Clp", "Snr", "Sp2", "", "8", "32", "", "nte", "", "", };
-static const char *const kNamesMixFm[] = { "", "", };
-static const char *const kNamesFxType[] = { "drv", "cmp", "", "", "2:1", };
-static const char *const kNamesDistType[] = { "fld", "", "drv", };
-static const char *const kNamesRatio[] = { "2:1", "4:1", "8:1", "", "Pp", "", };
-static const char *const kNamesDelayType[] = { "Pp", "", };
-static const char *const kNamesReverbType[] = { "", };
-static const char *const kNamesAudioOutFx[] = { "t1", "2", "", "", "", "", };
+static const char *const kNamesWaveform[] = { "Sin", "Tri", "Saw", "Rec", "Noi", "PWM", };
+static const char *const kNamesAudioOut[] = { "St1", "St2", "L1", "R1", "L2", "R2", "FX", };
+static const char *const kNamesSyncRates[] = { "off", "4/1", "2/1", "1/1", "1/2", "1/3", "1/4", "1/6", "1/8", "12", "16", "32", };
+static const char *const kNamesLfoWaves[] = { "sin", "tri", "sup", "sdn", "sqr", "rnd", "xup", "xdn", };
+static const char *const kNamesRetrigger[] = { "off", "v1", "v2", "v3", "v4", "v5", "v6", };
+static const char *const kNamesTransient[] = { "Snp", "Ofs", "Clk", "Ck2", "Tik", "Kik", "Rim", "Drp", "Hat", "Clp", "Kk2", "Snr", "Tom", "Sp2", };
+static const char *const kNamesMixFm[] = { "FM", "Mix", };
+static const char *const kNamesFxType[] = { "off", "drv", "rng", "cmp", "del", "Rev", };
+static const char *const kNamesDistType[] = { "tub", "fld", "clp", };
+static const char *const kNamesRatio[] = { "1:1", "2:1", "3:1", "4:1", "6:1", "8:1", };
+static const char *const kNamesDelayType[] = { "Del", "Pp", };
+static const char *const kNamesReverbType[] = { "Plt", };
+static const char *const kNamesAudioOutFx[] = { "St1", "St2", "L1", "R1", "L2", "R2", };
 static const char *const kNamesVoiceLfo[] = { "1", "2", "3", "4", "5", "6" };
 
 static const char *const kModTargetNames[] = {
@@ -507,7 +507,7 @@ inline const KitParam kKitParams[247] = {
 	{ 231, "PAR_PWM_4", "Pulse Width", "Snare Osc Pulse Width", "Osc", 3, 3, Control::Continuous, 0, 127, 0, nullptr, 0, 0 },
 	{ 232, "PAR_PWM_5", "Pulse Width", "Cymbal Osc Pulse Width", "Osc", 4, 4, Control::Continuous, 0, 127, 0, nullptr, 0, 0 },
 	{ 233, "PAR_PWM_6", "Pulse Width", "HiHat Osc Pulse Width", "Osc", 5, 5, Control::Continuous, 0, 127, 0, nullptr, 0, 0 },
-	{ 234, "PAR_FX_TYPE", "Type", "FX Type", "FX Bus", 6, 255, Control::Enum, 0, 4, 0, kNamesFxType, 5, 0 },
+	{ 234, "PAR_FX_TYPE", "Type", "FX Type", "FX Bus", 6, 255, Control::Enum, 0, 5, 0, kNamesFxType, 6, 0 },
 	{ 235, "PAR_FX_ROUTING", "Audio Out", "FX Audio Out", "FX Bus", 6, 255, Control::Enum, 0, 5, 0, kNamesAudioOutFx, 6, 1 },
 	{ 236, "PAR_FX_DRY_WET", "Dry/Wet", "FX Dry/Wet", "FX Bus", 6, 255, Control::Continuous, 0, 100, 0, nullptr, 0, 0 },
 	{ 237, "PAR_FX_DIST_TYPE", "Dist Type", "FX Dist Type", "FX Bus", 6, 255, Control::Enum, 0, 2, 0, kNamesDistType, 3, 0 },

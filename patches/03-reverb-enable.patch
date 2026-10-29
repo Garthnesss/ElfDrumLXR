@@ -1,0 +1,23 @@
+Patch 03 — Enable the compiled-out reverb (Phase 4, gate-proven)
+
+Why: upstream ships the full reverb DSP (FX/Reverb.c, a Spin-Semi-style
+allpass-loop design dating to the 2014 LXR-01 codebase) but compiles it out
+with USE_REVERB 0 (Core/Inc/Soundengine/FxBus.h) and the {"rev"} entry
+commented out of the fxNames menu table. The Phase 4 gate (see STATUS.md)
+proved the DSP complete, stable and inert for existing kits — FX type is a
+kit byte and no existing kit contains value 5 — so the define flips in the
+copied build tree like every other patch. Removing this file restores the
+exact upstream behaviour. The experiment flag route that proved it
+(Makefile OPT_PATCHES) is retained for A/B builds.
+
+--- a/Core/Inc/Soundengine/FxBus.h
++++ b/Core/Inc/Soundengine/FxBus.h
+@@ -23,7 +23,7 @@
+ #include "Soundengine/DSPAudio/FX/Delay.h"
+ #include "Soundengine/DSPAudio/FX/Reverb.h"
+ 
+-#define USE_REVERB 0
++#define USE_REVERB 1
+ 
+ enum FxTypeEnum
+ {

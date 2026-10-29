@@ -124,16 +124,23 @@ static void scanPage(int fwPage, int panelPage, int voice)
 }
 
 /* ---- enum name tables ---------------------------------------------------- */
-/* A firmware name table: entry [0] holds the count as a char, entries follow. */
-static void emitNameList(const char *arrName, const char (*table)[8], int width, int leadDash)
+/* A firmware name table: entry [0] holds the count as a char, entries follow.
+ * Row stride matters: MenuText.h tables are char[4] (filterTypes char[8],
+ * outputNames char[7], mixFmNames char[6]) — reading them all at stride 8
+ * (the pre-Phase-4 code) merged row pairs and garbled every list except
+ * filterTypes. `extra` appends one plugin-side entry after the firmware
+ * ones (the FX type list's "Rev": upstream's table literally has the entry
+ * commented out — Phase 4 enables the DSP it names). */
+static void emitNameList(const char *arrName, const char *table, int stride, int width, int leadDash, const char *extra)
 {
-	int count = (uint8_t) table[0][0];
+	int count = (uint8_t) table[0];
 	printf("static const char *const %s[] = { ", arrName);
 	if (leadDash) printf("\"-\", ");
 	for (int i = 1; i <= count; i++) {
-		char buf[16]; clean(buf, table[i], width);
+		char buf[16]; clean(buf, table + i * stride, width);
 		qstr(fixName(buf)); printf(", ");
 	}
+	if (extra) { qstr(extra); printf(", "); }
 	printf("};\n");
 }
 
@@ -175,7 +182,7 @@ static int menuCount(int menuId)
 	case MENU_RETRIGGER: return retriggerNames[0][0];
 	case MENU_TRANS: return transientNames[0][0];
 	case MENU_MIX_FM: return mixFmNames[0][0];
-	case MENU_FX: return fxNames[0][0];
+	case MENU_FX: return 6; /* 5 firmware entries + plugin "Rev" (Phase 4 reverb; the firmware's fxNames table has the entry commented out and its DSP compiled out — both enabled here) */
 	case MENU_DIST: return distNames[0][0];
 	case MENU_RATIO: return ratioNames[0][0];
 	case MENU_DELAY: return delayNames[0][0];
@@ -326,20 +333,20 @@ int main(void)
 	       "    const char* const* valueNames; uint8_t numValues; uint8_t flags;\n};\n\n");
 
 	/* enum name lists */
-	emitNameList("kNamesFilter", filterTypes, 3, 1);
-	emitNameList("kNamesWaveform", waveformNames, 3, 0);
-	emitNameList("kNamesAudioOut", outputNames, 6, 0);
-	emitNameList("kNamesSyncRates", syncRateNames, 3, 0);
-	emitNameList("kNamesLfoWaves", lfoWaveNames, 3, 0);
-	emitNameList("kNamesRetrigger", retriggerNames, 3, 0);
-	emitNameList("kNamesTransient", transientNames, 3, 0);
-	emitNameList("kNamesMixFm", mixFmNames, 5, 0);
-	emitNameList("kNamesFxType", fxNames, 3, 0);
-	emitNameList("kNamesDistType", distNames, 3, 0);
-	emitNameList("kNamesRatio", ratioNames, 3, 0);
-	emitNameList("kNamesDelayType", delayNames, 3, 0);
-	emitNameList("kNamesReverbType", reverbNames, 3, 0);
-	emitNameList("kNamesAudioOutFx", outputNamesFx, 6, 0);
+	emitNameList("kNamesFilter", (const char*)filterTypes, (int)sizeof filterTypes[0], 3, 1, NULL);
+	emitNameList("kNamesWaveform", (const char*)waveformNames, (int)sizeof waveformNames[0], 3, 0, NULL);
+	emitNameList("kNamesAudioOut", (const char*)outputNames, (int)sizeof outputNames[0], 6, 0, NULL);
+	emitNameList("kNamesSyncRates", (const char*)syncRateNames, (int)sizeof syncRateNames[0], 3, 0, NULL);
+	emitNameList("kNamesLfoWaves", (const char*)lfoWaveNames, (int)sizeof lfoWaveNames[0], 3, 0, NULL);
+	emitNameList("kNamesRetrigger", (const char*)retriggerNames, (int)sizeof retriggerNames[0], 3, 0, NULL);
+	emitNameList("kNamesTransient", (const char*)transientNames, (int)sizeof transientNames[0], 3, 0, NULL);
+	emitNameList("kNamesMixFm", (const char*)mixFmNames, (int)sizeof mixFmNames[0], 5, 0, NULL);
+	emitNameList("kNamesFxType", (const char*)fxNames, (int)sizeof fxNames[0], 3, 0, "Rev");
+	emitNameList("kNamesDistType", (const char*)distNames, (int)sizeof distNames[0], 3, 0, NULL);
+	emitNameList("kNamesRatio", (const char*)ratioNames, (int)sizeof ratioNames[0], 3, 0, NULL);
+	emitNameList("kNamesDelayType", (const char*)delayNames, (int)sizeof delayNames[0], 3, 0, NULL);
+	emitNameList("kNamesReverbType", (const char*)reverbNames, (int)sizeof reverbNames[0], 3, 0, NULL);
+	emitNameList("kNamesAudioOutFx", (const char*)outputNamesFx, (int)sizeof outputNamesFx[0], 6, 0, NULL);
 	printf("static const char *const kNamesVoiceLfo[] = { \"1\", \"2\", \"3\", \"4\", \"5\", \"6\" };\n\n");
 
 	/* mod target names: "<owner prefix> <long name>", index 0 = Off */

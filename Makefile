@@ -19,9 +19,12 @@ CFLAGS := -std=gnu11 -O2 -w -D__fp16=$(FP16) '-Dsection(x)=unused' -Ishim -Iengi
 
 all: $(B)/lxr-render
 
-$(B)/.patched: $(wildcard patches/*.patch) $(VENDOR)/VENDOR_OK
+# Optional experiment patches (patches-optional/) apply only when named:
+#   make B=build-reverb OPT_PATCHES=patches-optional/03-reverb-enable.patch
+OPT_PATCHES ?=
+$(B)/.patched: $(wildcard patches/*.patch) $(OPT_PATCHES) $(VENDOR)/VENDOR_OK
 	rm -rf $(B)/src && mkdir -p $(B)/src && cp -R $(VENDOR)/Core $(B)/src/
-	for p in patches/*.patch; do patch -s -p1 -d $(B)/src < $$p || exit 1; done
+	for p in patches/*.patch $(OPT_PATCHES); do patch -s -p1 -d $(B)/src < $$p || exit 1; done
 	touch $@
 
 # Stamp file proving the vendor checkout is at the pinned commit (scripts/fetch-vendor.sh enforces it).
@@ -44,6 +47,10 @@ test: $(B)/test_intrinsics $(B)/test_midi_parser $(B)/seq-pat
 	./$(B)/test_intrinsics
 	./$(B)/test_midi_parser
 	./$(B)/seq-pat
+
+# Phase 4 reverb gate workhorse: one hit + a long tail render.
+$(B)/tail-render: $(OBJS) $(B)/obj/tools/tail-render.o
+	@mkdir -p $(B); $(CC) $^ -o $@ -lm
 
 # Phase 3 gate (a): .PAT round-trip (also part of `make test`).
 $(B)/seq-pat: $(OBJS) $(B)/obj/tools/seq-pat.o
