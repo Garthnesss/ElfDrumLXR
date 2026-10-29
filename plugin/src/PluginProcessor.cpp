@@ -10,7 +10,7 @@ extern "C" {
 }
 
 namespace {
-constexpr uint8_t kStateVersion = 2;   // v2 appends the morph target's name (v1 still loads)
+constexpr uint8_t kStateVersion = 3;   // v2: + morph target name; v3: + performance faders (v1/v2 still load)
 // GM drum map, used ONLY while the firmware's per-voice note parameters are all at their
 // stock placeholder value (48) — see processBlock. Same map PHX-D01 ships (host/midi.c).
 constexpr int kGmMap[7] = { 36, 45, 50, 38, 39, 42, 46 };
@@ -18,15 +18,37 @@ constexpr int kGmMap[7] = { 36, 45, 50, 38, 39, 42, 46 };
 
 juce::AudioProcessorValueTreeState::ParameterLayout ElfDrumLXRProcessor::createParameterLayout()
 {
+    // Display names and ranges come from the generated firmware metadata
+    // (ParamMetadata.generated.h); the IDs are unchanged from Phase 1
+    // (kit000..kit246), so existing sessions/automation still map. Phase 1
+    // clamped every parameter to 0..127 — the metadata ranges fix the
+    // mod-target params, whose values run to 228.
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-    params.reserve (kNumKitParams + 1);
+    params.reserve (kNumKitParams + 8);
     for (int i = 0; i < kNumKitParams; ++i)
+    {
+        const auto& meta = elfmeta::kKitParams[i];
+        const int def = juce::jlimit ((int) meta.minValue, (int) meta.maxValue,
+                                      (int) initkit::params[i]);
         params.push_back (std::make_unique<juce::AudioParameterInt> (
             juce::ParameterID { kitParamId (i), 1 },
-            "Kit Param " + juce::String (i), 0, 127, (int) initkit::params[i]));
+            meta.displayName, meta.minValue, meta.maxValue, def));
+    }
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "morph", 1 }, "Morph",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+    // Performance faders: NOT kit parameters. They drive the engine wrapper's
+    // fader path (the hardware's performance-page faders) plus a host-side
+    // master trim, and persist in the plugin state (v3), never in .SND files.
+    static const char* faderNames[6] = { "Drum 1", "Drum 2", "Drum 3", "Snare", "Cymbal", "HiHat" };
+    for (int v = 0; v < 6; ++v)
+        params.push_back (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { faderParamId (v), 1 },
+            juce::String ("Fader ") + faderNames[v],
+            juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { faderParamId (6), 1 }, "Fader Master",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f));
     return { params.begin(), params.end() };
 }
 
@@ -39,6 +61,10 @@ ElfDrumLXRProcessor::ElfDrumLXRProcessor()
     for (int i = 0; i < kNumKitParams; ++i)
         kitParamPtrs[i] = apvts.getRawParameterValue (kitParamId (i));
     morphParamPtr = apvts.getRawParameterValue ("morph");
+    for (int v = 0; v < 6; ++v)
+        faderPtrs[v] = apvts.getRawParameterValue (faderParamId (v));
+    masterFaderPtr = apvts.getRawParameterValue (faderParamId (6));
+    lastFaders.fill (-1.0f);   // force a fader push on the first block
 
     std::memcpy (baseKit.data(), initkit::params, kNumKitParams);
     std::memcpy (morphTargetKit.data(), initkit::params, kNumKitParams);
@@ -184,7 +210,7 @@ void ElfDrumLXRProcessor::handleAsyncUpdate()
     }
     for (int i = 0; i < kNumKitParams; ++i)
         if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (kitParamId (i))))
-            p->setValueNotifyingHost (snapshot[i] / 127.0f);
+            p->setValueNotifyingHost (p->convertTo0to1 ((float) snapshot[i]));
     bridgeSuspended = false;
 }
 
@@ -244,6 +270,17 @@ void ElfDrumLXRProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         delete req;
     }
     bridgeParameters();
+
+    // --- performance faders (not kit params): push changes into the engine ---
+    for (int v = 0; v < 6; ++v)
+    {
+        const float f = faderPtrs[v]->load();
+        if (f != lastFaders[v]) { host.setFader (v, f); lastFaders[v] = f; }
+    }
+    {
+        const float f = masterFaderPtr->load();
+        if (f != lastFaders[6]) { host.setMasterGain (f); lastFaders[6] = f; }
+    }
 
     // --- queued editor triggers fire at this block's start ---
     const uint64_t blockStartPos = host.getHostPosition();
@@ -371,6 +408,85 @@ bool ElfDrumLXRProcessor::saveKitFile (const juce::File& file)
     return file.replaceWithData (data.getData(), data.getSize());
 }
 
+void ElfDrumLXRProcessor::loadFactoryInit()
+{
+    auto req = std::make_unique<KitRequest>();
+    std::memcpy (req->params.data(), initkit::params, kNumKitParams);
+    std::array<char, 8> n {};
+    std::memcpy (n.data(), initkit::name, std::min (strlen (initkit::name), (size_t) 8));
+    req->name = n;
+    postKitRequest (std::move (req));
+}
+
+//==============================================================================
+// Phase 2 byte-level access (message thread; APVTS is the truth).
+std::array<uint8_t, ElfDrumLXRProcessor::kNumKitParams> ElfDrumLXRProcessor::currentKitBytes() const
+{
+    std::array<uint8_t, kNumKitParams> out;
+    for (int i = 0; i < kNumKitParams; ++i)
+        out[i] = (uint8_t) juce::roundToInt (kitParamPtrs[i]->load());
+    return out;
+}
+
+void ElfDrumLXRProcessor::writeParamValues (const int* indices, const uint8_t* values, int count)
+{
+    for (int n = 0; n < count; ++n)
+    {
+        const int i = indices[n];
+        if (i < 0 || i >= kNumKitParams)
+            continue;
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (kitParamId (i))))
+            p->setValueNotifyingHost (p->convertTo0to1 ((float) values[n]));
+    }
+}
+
+void ElfDrumLXRProcessor::randomiseParams (int voice, uint32_t seed)
+{
+    // Guarded randomise. The guards (mirroring the morph keep-set's spirit and
+    // the LXR02XXL community randomiser's level floor):
+    //   - routing params are never touched (metadata kFlagRouting: the six
+    //     per-voice AUDIO_OUT params + PAR_FX_ROUTING),
+    //   - mod-target selectors are never touched (kFlagModTarget: the twelve
+    //     DTYPE_TARGET_SELECTION_* params + PAR_MORPH_KIT_DEST, the morph
+    //     destination preset selector),
+    //   - level params (kFlagLevel: PAR_VOL1..6, PAR_TRANS*_VOL) are floored
+    //     at 30% of their range so a voice can't be silenced by chance,
+    //   - PAR_NONE (the dummy slot) and the Global/System params are out of
+    //     scope: per-voice randomise covers exactly that voice's slice;
+    //     whole-kit covers the six voice slices + the FX page +
+    //     PAR_VOICE_DECIMATION_ALL (the one performance-global in the kit).
+    // Everything goes through writeParamValues, i.e. the normal APVTS path,
+    // so the panel reflects the result and the bridge replays it to the engine.
+    juce::Random rng ((juce::int64) seed);
+    std::vector<int> indices;
+    std::vector<uint8_t> values;
+    for (const auto& meta : elfmeta::kKitParams)
+    {
+        const int i = (int) meta.index;
+        if (voice >= 0)
+        {
+            if (meta.voice != (uint8_t) voice)
+                continue;
+        }
+        else
+        {
+            const bool inScope = meta.voice < 6 || meta.page == elfmeta::PageFX
+                                 || i == 114 /* PAR_VOICE_DECIMATION_ALL */;
+            if (! inScope)
+                continue;
+        }
+        if (meta.flags & (elfmeta::kFlagRouting | elfmeta::kFlagModTarget))
+            continue;
+        const int lo = meta.minValue, hi = meta.maxValue;
+        int v = lo + rng.nextInt (hi - lo + 1);
+        if (meta.flags & elfmeta::kFlagLevel)
+            v = juce::jmax (v, lo + (int) (0.30f * (float) (hi - lo)));
+        indices.push_back (i);
+        values.push_back ((uint8_t) v);
+    }
+    writeParamValues (indices.data(), values.data(), (int) indices.size());
+}
+
 void ElfDrumLXRProcessor::triggerVoice (int voice)
 {
     if (voice < 0 || voice > 6) return;
@@ -395,23 +511,28 @@ void ElfDrumLXRProcessor::getStateInformation (juce::MemoryBlock& destData)
     out.write (base.data(), kNumKitParams);
     out.write (target.data(), kNumKitParams);
     out.writeFloat (morphParamPtr->load());
-    const juce::ScopedLock sl (nameLock);
-    out.write (kitNameBytes.data(), 8);
-    out.write (morphTargetNameBytes.data(), 8);   // v2 addition
+    {
+        const juce::ScopedLock sl (nameLock);
+        out.write (kitNameBytes.data(), 8);
+        out.write (morphTargetNameBytes.data(), 8);   // v2 addition
+    }
+    for (int v = 0; v < 6; ++v)                        // v3 addition: performance faders
+        out.writeFloat (faderPtrs[v]->load());
+    out.writeFloat (masterFaderPtr->load());
 }
 
 void ElfDrumLXRProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     juce::MemoryInputStream in (data, (size_t) sizeInBytes, false);
     const auto version = (uint8_t) in.readByte();
-    if (version != 1 && version != (char) kStateVersion)
+    if (version != 1 && version != 2 && version != (char) kStateVersion)
         return;
     auto req = std::make_unique<KitRequest>();
     if (in.read (req->params.data(), kNumKitParams) != kNumKitParams) return;
     if (in.read (req->target.data(), kNumKitParams) != kNumKitParams) return;
     req->morph = in.readFloat();
     if (in.read (req->name.data(), 8) != 8) return;
-    if (version == (char) kStateVersion)
+    if (version >= 2)
     {
         if (in.read (req->targetName.data(), 8) != 8) return;
     }
@@ -424,6 +545,16 @@ void ElfDrumLXRProcessor::setStateInformation (const void* data, int sizeInBytes
     if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter ("morph")))
         p->setValueNotifyingHost (req->morph);
     postKitRequest (std::move (req));
+    if (version >= 3)
+    {
+        // v3 addition: performance faders (plain APVTS values, not kit data).
+        for (int v = 0; v < 7; ++v)
+        {
+            const float f = in.readFloat();
+            if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (faderParamId (v))))
+                p->setValueNotifyingHost (f);
+        }
+    }
 }
 
 //==============================================================================

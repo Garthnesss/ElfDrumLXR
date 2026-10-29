@@ -30,6 +30,11 @@ public:
     // Kit operations (forwarded to the wrapper's single parameter-entry path).
     void loadKit (const uint8_t params[247]);
     void editKit (const uint8_t params[247]);
+    // Performance faders (the hardware's performance-page faders, via the
+    // engine wrapper's lxr_set_fader) + a host-side master trim applied to
+    // the rendered output. Not kit parameters.
+    void setFader (int voice, float gain);
+    void setMasterGain (float gain) { masterGain = gain; }
 
     // Queue a voice hit to fire at an absolute host-sample position (>= current position).
     void queueHit (int voice, int note, int velocity, uint64_t atHostSample);
@@ -55,6 +60,7 @@ private:
     double hostRate = 44100.0;
     bool prepared = false;
     int latencySamples = 0;
+    float masterGain = 1.0f;         // host-side master trim (1.0 = unity, no-op)
 
     std::unique_ptr<r8b::CDSPResampler> resampler[kJacks];
     std::vector<float> fifo[kJacks];

@@ -88,6 +88,7 @@ int EngineHost::measureLatency()
 
 void EngineHost::loadKit (const uint8_t params[247]) { lxr_load_params (params); }
 void EngineHost::editKit (const uint8_t params[247]) { lxr_edit_params (params); }
+void EngineHost::setFader (int voice, float gain) { lxr_set_fader (voice, gain); }
 
 void EngineHost::queueHit (int voice, int note, int velocity, uint64_t atHostSample)
 {
@@ -145,7 +146,10 @@ void EngineHost::render (float* const* out, int numSamples)
     for (int c = 0; c < kJacks; ++c)
     {
         const float* src = fifo[c].data() + fifoHead;
-        std::copy (src, src + numSamples, out[c]);
+        if (masterGain == 1.0f)
+            std::copy (src, src + numSamples, out[c]);
+        else
+            for (int i = 0; i < numSamples; ++i) out[c][i] = src[i] * masterGain;
     }
     fifoHead += (size_t) numSamples;
     hostPosition += (uint64_t) numSamples;

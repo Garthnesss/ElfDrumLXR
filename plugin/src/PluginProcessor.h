@@ -5,7 +5,9 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
 #include <atomic>
+#include <vector>
 #include "EngineHost.h"
+#include "ParamMetadata.generated.h"
 
 // ElfDrumLXR — Phase 1 plugin shell around the Phase 0 engine (see ARCHITECTURE.md).
 // Threading model: the engine lives entirely on the audio thread (EngineHost). The message
@@ -47,10 +49,23 @@ public:
     bool loadKitFile (const juce::File& file);          // .SND (255 B, or 309 B module kit)
     bool loadMorphTargetFile (const juce::File& file);  // set the morph target kit explicitly
     bool saveKitFile (const juce::File& file);          // writes name + current kit bytes (255 B)
+    void loadFactoryInit();                             // factory INIT kit as a normal load
     void triggerVoice (int voice);                      // 0..6 (6 = open hihat)
     juce::String getKitName();
     juce::String getMorphTargetName();
     juce::AudioProcessorValueTreeState& getApvts() { return apvts; }
+
+    // --- Phase 2: byte-level kit access for voice slices / randomise / tests ---
+    // APVTS is the user-visible truth; these read and write it on the message
+    // thread. Writes go through setValueNotifyingHost with the parameter's own
+    // range conversion, so the audio-thread bridge replays the edit diff into
+    // the engine exactly as for a panel edit.
+    std::array<uint8_t, kNumKitParams> currentKitBytes() const;
+    void writeParamValues (const int* indices, const uint8_t* values, int count);
+    // Guarded randomise (guards documented in PluginProcessor.cpp): voice 0..5
+    // for one voice, -1 for the whole kit. Deterministic for a given seed.
+    void randomiseParams (int voice, uint32_t seed);
+    static juce::String faderParamId (int voice) { return voice < 6 ? "fader" + juce::String (voice) : "faderMaster"; }
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
     static juce::String kitParamId (int i) { return "kit" + juce::String (i).paddedLeft ('0', 3); }
@@ -77,6 +92,9 @@ private:
     juce::AudioProcessorValueTreeState apvts;
     std::array<std::atomic<float>*, kNumKitParams> kitParamPtrs {};
     std::atomic<float>* morphParamPtr = nullptr;
+    std::array<std::atomic<float>*, 6> faderPtrs {};
+    std::atomic<float>* masterFaderPtr = nullptr;
+    std::array<float, 7> lastFaders {};   // audio thread: 0..5 voices, 6 master; -1 = unset
 
     EngineHost host;
     std::vector<float> scratch;   // sink for engine jacks the host didn't give us channels for
