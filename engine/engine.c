@@ -11,6 +11,8 @@
 #include "Soundengine/MIDI/MidiVoiceControl.h"
 #include "Soundengine/MIDI/MidiMessages.h"
 #include "Soundengine/MIDI/ParameterArray.h"
+#include "Soundengine/MIDI/MidiParser.h"
+#include "Parameters.h"
 #include "frontPanelParser_ui.h"
 #include "menu/menu.h"
 #include "menu/CcNr2Text.h"
@@ -34,6 +36,22 @@ void lxr_init(void)
 	for (int i = 0; i < 6; i++) modNode_init(&velocityModulators[i]);
 	seq_init();
 	seq_setBpm(120);
+	/* The hardware loads its global (non-kit) parameters at boot; with no SD card here we seed
+	   activeParameters with the firmware's own factory defaults — the values written by
+	   preset_loadDefaultGlobals() in presetManager.c (which is not compiled into this harness:
+	   it needs FatFs). Only the defaults that exist there are set; the rest stay 0 as in the
+	   firmware's zero-initialised array. Notable: every voice's MIDI channel = 1, every voice's
+	   MIDI note = 48, global channel = 0 ("all"). */
+	activeParameters[PAR_BPM] = 120;
+	for (int i = 0; i < 7; i++) activeParameters[PAR_MIDI_NOTE1 + i] = 48;
+	for (int i = 0; i < 6; i++) activeParameters[PAR_MIDI_CHAN_1 + i] = 1;
+	activeParameters[PAR_MIDI_CHAN_7] = 1;	/* index 284 — not contiguous with CHAN_1..6 */
+	activeParameters[PAR_MIDI_CHAN_GLOBAL] = 0;	/* all */
+	activeParameters[PAR_MIDI_ROUTING] = 0;
+	activeParameters[PAR_MIDI_FILT_TX] = 15;	/* all */
+	activeParameters[PAR_MIDI_FILT_RX] = 15;	/* all */
+	activeParameters[PAR_BAR_RESET_MODE] = 1;
+	activeParameters[PAR_PATTERN_MODE] = 1;		/* auto */
 	initDrumVoice();
 	Snare_init();
 	HiHat_init();
@@ -120,4 +138,45 @@ void lxr_note(int voice, uint8_t note, uint8_t velocity)
 {
 	if (voice < 0 || voice >= 7) return;
 	voiceControl_noteOn((uint8_t)voice, note > 127 ? 127 : note, velocity);
+}
+
+/* --- Phase 1: firmware globals + external-MIDI parser entry --- */
+
+void lxr_midi_bytes(const uint8_t *data, int len)
+{
+	for (int i = 0; i < len; i++) midiParser_parseUartData(data[i]);
+}
+
+uint8_t lxr_global_param(uint16_t idx)
+{
+	return idx < NUM_PARAMS ? activeParameters[idx] : 0;
+}
+
+uint8_t lxr_midi_note(int voice)
+{
+	if (voice < 0 || voice >= 7) return 0;
+	return activeParameters[PAR_MIDI_NOTE1 + voice];
+}
+
+uint8_t lxr_midi_channel(int voice)
+{
+	if (voice < 0 || voice >= 7) return 0;
+	const uint8_t stored = (voice < 6) ? activeParameters[PAR_MIDI_CHAN_1 + voice]
+	                                    : activeParameters[PAR_MIDI_CHAN_7];
+	return stored > 0 ? (uint8_t)(stored - 1) : 0;	/* stored 1-based (menu shows 1-16) */
+}
+
+uint8_t lxr_global_channel(void)
+{
+	return activeParameters[PAR_MIDI_CHAN_GLOBAL];
+}
+
+void lxr_set_active_track(int voice)
+{
+	if (voice >= 0 && voice < 7) frontParser_activeTrack = (uint8_t)voice;
+}
+
+int lxr_active_track(void)
+{
+	return frontParser_activeTrack;
 }

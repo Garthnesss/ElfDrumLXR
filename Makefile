@@ -40,11 +40,16 @@ $(B)/lxr-render: $(OBJS) $(B)/obj/tools/lxr-render.o
 $(B)/obj/tools/%.o: tools/%.c engine/engine.h $(B)/.patched
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
 
-test: $(B)/test_intrinsics
+test: $(B)/test_intrinsics $(B)/test_midi_parser
 	./$(B)/test_intrinsics
+	./$(B)/test_midi_parser
 
 $(B)/test_intrinsics: tests/test_intrinsics.c shim/stm32f7xx_hal.h
 	@mkdir -p $(B); $(CC) -std=gnu11 -O2 -Wall -Ishim $< -o $@
+
+$(B)/test_midi_parser: tests/test_midi_parser.c $(OBJS)
+	@mkdir -p $(B)/obj; $(CC) $(CFLAGS) -c $< -o $(B)/obj/test_midi_parser.o
+	$(CC) $(B)/obj/test_midi_parser.o $(OBJS) -o $@ -lm
 
 clean:
 	rm -rf $(B)
