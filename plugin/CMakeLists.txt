@@ -222,6 +222,30 @@ target_link_libraries(plugin_stem_test PRIVATE
     juce::juce_data_structures
     juce::juce_events)
 
+# ---------------------------------------------------------------------------
+# Phase 4: CLAP via clap-juce-extensions (optional target, dep pinned by
+# fetch-deps.sh). Same processor, same gates — the CLAP smoke harness below
+# loads the built .clap with a minimal independent host and renders.
+# ---------------------------------------------------------------------------
+option(ELF_BUILD_CLAP "Build the CLAP target via clap-juce-extensions" ON)
+if(ELF_BUILD_CLAP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/clap-juce-extensions/CMakeLists.txt")
+    add_subdirectory(vendor/clap-juce-extensions)
+    clap_juce_extensions_plugin(TARGET ElfDrumLXR
+        CLAP_ID "com.garth.elfdrumlxr"
+        CLAP_FEATURES instrument drum-machine)
+
+    # Minimal CLAP host for the headless load/render smoke (tools not linked
+    # against JUCE or the plugin — it dlopen()s the .clap like a real host).
+    add_executable(clap_smoke_test render/ClapSmokeTest.cpp)
+    target_include_directories(clap_smoke_test PRIVATE
+        vendor/clap-juce-extensions/clap-libs/clap/include)
+    target_link_libraries(clap_smoke_test PRIVATE ${CMAKE_DL_LIBS})
+    set_target_properties(clap_smoke_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clap_smoke_test_artefacts")
+elseif(ELF_BUILD_CLAP)
+    message(WARNING "clap-juce-extensions not in plugin/vendor — run plugin/fetch-deps.sh; CLAP target skipped.")
+endif()
+
 # Phase 2 panel harness: metadata cross-check (APVTS side), voice-slice
 # byte+render proof, state round-trip, guarded-randomise guards.
 juce_add_console_app(plugin_panel_test PRODUCT_NAME "plugin-panel-test")
