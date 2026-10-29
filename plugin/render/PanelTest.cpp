@@ -176,7 +176,7 @@ int testMetadata()
     check (named == 247, "every APVTS kit param carries its metadata display name");
     check (ranged == 247, "every APVTS kit param range matches the metadata");
     check (listed == 247, "every enum/mod-target param has a complete value-name list");
-    check (proc.getParameters().size() == 260, "APVTS holds 247 kit + morph + 7 fader + 5 sequencer params");
+    check (proc.getParameters().size() == 268, "APVTS holds 247 kit + morph + 7 fader + 5 sequencer + 3 Morph XY + 5 infinity/pitch params");
     return failures;
 }
 
@@ -334,11 +334,14 @@ int testState (const juce::File& kitAFile, const juce::File& kitBFile, const juc
         a.releaseResources();
     }
     std::printf ("  state blob: %d bytes, version %d\n", (int) blob.getSize(), (int) ((const uint8_t*) blob.getData())[0]);
-    // Phase 3: state is v4 — the v3 body (543 B) + pattern/song names (1024 B)
-    // + pattern set + song data + the 9-byte sequencer tail.
+    // State is v5 — the v3 body (543 B) + pattern/song names (1024 B)
+    // + pattern set + song data + the 9-byte sequencer tail + the Phase 5
+    // block (uint32 size + 334 B block v3: morph target B + XY + macros +
+    // infinity/pitch16 settings).
     check (blob.getSize() == (size_t) (1 + 247 + 247 + 4 + 8 + 8 + 7 * 4)
-                                 + 1024 + lxr_seq_patternset_size() + lxr_seq_songdata_size() + 9,
-           "v4 state blob size");
+                                 + 1024 + lxr_seq_patternset_size() + lxr_seq_songdata_size() + 9
+                                 + 4 + 334,
+           "v5 state blob size");
 
     ElfDrumLXRProcessor b;
     b.setPlayConfigDetails (0, 4, kRate, kBlock);

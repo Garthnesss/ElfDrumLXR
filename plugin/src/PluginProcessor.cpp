@@ -3,6 +3,7 @@
  #include "PluginEditor.h"
 #endif
 #include "InitKit.h"
+#include "VoiceSlice.h"
 #include <cstring>
 
 extern "C" {
@@ -10,9 +11,10 @@ extern "C" {
 }
 
 namespace {
-constexpr uint8_t kStateVersion = 4;   // v2: + morph target name; v3: + performance faders;
+constexpr uint8_t kStateVersion = 5;   // v2: + morph target name; v3: + performance faders;
                                        // v4: + pattern set, song data, pattern/song names, seq settings
-                                       // (v1-v3 still load; their pattern set stays at firmware init)
+                                       // v5: + Phase 5 block (morph target B + XY, macros, perf modes)
+                                       // (v1-v4 still load; their pattern set stays at firmware init)
 // GM drum map, used ONLY while the firmware's per-voice note parameters are all at their
 // stock placeholder value (48) — see processBlock. Same map PHX-D01 ships (host/midi.c).
 constexpr int kGmMap[7] = { 36, 45, 50, 38, 39, 42, 46 };
@@ -65,6 +67,30 @@ juce::AudioProcessorValueTreeState::ParameterLayout ElfDrumLXRProcessor::createP
         juce::NormalisableRange<float> (30.0f, 300.0f, 0.1f), 120.0f));
     params.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "seqExtSync", 1 }, "Seq Ext Sync", false));
+    // Phase 5 (item 4): Morph XY. When morphXY is on, the single `morph`
+    // amount is bypassed and the desired kit is the documented two-stage
+    // composition toward target A (the classic morph target) by morphX, then
+    // toward target B by morphY (kitops::morphXY). New IDs; nothing frozen
+    // changes.
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "morphX", 1 }, "Morph X (to A)",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "morphY", 1 }, "Morph Y (to B)",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+    params.push_back (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "morphXY", 1 }, "Morph XY On", false));
+    // Phase 5 (item 8): infinity mode + 16 Pitches tonal mode.
+    params.push_back (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "seqInfinity", 1 }, "Infinity (evolving sequencer)", false));
+    params.push_back (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "pitch16", 1 }, "16 Pitches On", false));
+    params.push_back (std::make_unique<juce::AudioParameterInt> (
+        juce::ParameterID { "pitch16Voice", 1 }, "16 Pitches Voice", 0, 3, 0));
+    params.push_back (std::make_unique<juce::AudioParameterInt> (
+        juce::ParameterID { "pitch16Scale", 1 }, "16 Pitches Scale", 0, 4, 1));
+    params.push_back (std::make_unique<juce::AudioParameterInt> (
+        juce::ParameterID { "pitch16Root", 1 }, "16 Pitches Root", 0, 11, 0));
     return { params.begin(), params.end() };
 }
 
@@ -91,6 +117,15 @@ ElfDrumLXRProcessor::ElfDrumLXRProcessor()
     masterFaderPtr = apvts.getRawParameterValue (faderParamId (6));
     lastFaders.fill (-1.0f);   // force a fader push on the first block
 
+    morphXPtr = apvts.getRawParameterValue ("morphX");
+    morphYPtr = apvts.getRawParameterValue ("morphY");
+    morphXYPtr = apvts.getRawParameterValue ("morphXY");
+    seqInfinityPtr = apvts.getRawParameterValue ("seqInfinity");
+    pitch16Ptr = apvts.getRawParameterValue ("pitch16");
+    pitch16VoicePtr = apvts.getRawParameterValue ("pitch16Voice");
+    pitch16ScalePtr = apvts.getRawParameterValue ("pitch16Scale");
+    pitch16RootPtr = apvts.getRawParameterValue ("pitch16Root");
+
     seqPlayPtr = apvts.getRawParameterValue ("seqPlay");
     seqPatternPtr = apvts.getRawParameterValue ("seqPattern");
     seqSongModePtr = apvts.getRawParameterValue ("seqSongMode");
@@ -101,10 +136,12 @@ ElfDrumLXRProcessor::ElfDrumLXRProcessor()
 
     std::memcpy (baseKit.data(), initkit::params, kNumKitParams);
     std::memcpy (morphTargetKit.data(), initkit::params, kNumKitParams);
+    std::memcpy (morphTarget2Kit.data(), initkit::params, kNumKitParams);
     std::array<char, 8> n {};
     std::memcpy (n.data(), initkit::name, std::min (strlen (initkit::name), (size_t) 8));
     setKitNameBytes (n);
     setMorphTargetNameBytes (n);   // startup target IS the current kit — the editor shows it
+    setMorphTarget2NameBytes (n);
 }
 
 ElfDrumLXRProcessor::~ElfDrumLXRProcessor()
@@ -136,6 +173,31 @@ juce::String ElfDrumLXRProcessor::getMorphTargetName()
 {
     const juce::ScopedLock sl (nameLock);
     return juce::String (morphTargetNameBytes.data(), 8).trimEnd();
+}
+
+void ElfDrumLXRProcessor::setMorphTarget2NameBytes (const std::array<char, 8>& n)
+{
+    const juce::ScopedLock sl (nameLock);
+    morphTarget2NameBytes = n;
+}
+
+juce::String ElfDrumLXRProcessor::getMorphTarget2Name()
+{
+    const juce::ScopedLock sl (nameLock);
+    return juce::String (morphTarget2NameBytes.data(), 8).trimEnd();
+}
+
+bool ElfDrumLXRProcessor::loadMorphTarget2File (const juce::File& file)
+{
+    juce::MemoryBlock data;
+    if (! file.loadFileAsData (data) || data.getSize() < 255)
+        return false;
+    auto req = std::make_unique<KitRequest>();
+    req->target2Only = true;
+    std::memcpy (req->name.data(), data.getData(), 8);
+    std::memcpy (req->params.data(), (const uint8_t*) data.getData() + 8, kNumKitParams);
+    postKitRequest (std::move (req));
+    return true;
 }
 
 //==============================================================================
@@ -182,26 +244,61 @@ void ElfDrumLXRProcessor::postKitRequest (std::unique_ptr<KitRequest> req)
         delete old;
 }
 
+std::array<uint8_t, ElfDrumLXRProcessor::kNumKitParams>
+ElfDrumLXRProcessor::computeDesired (const std::array<uint8_t, kNumKitParams>& base,
+                                     float legacyMorph) const
+{
+    std::array<uint8_t, kNumKitParams> desired;
+    if (morphXYPtr->load() > 0.5f)
+    {
+        // Phase 5 Morph XY: two-stage firmware-morph composition (KitOps.h).
+        kitops::morphXY (base, morphTargetKit, morphTarget2Kit,
+                         morphXPtr->load(), morphYPtr->load(), desired);
+    }
+    else if (legacyMorph > 0.001f)
+    {
+        lxr_morph_kit (base.data(), morphTargetKit.data(),
+                       (uint8_t) juce::roundToInt (legacyMorph * 255.0f), desired.data());
+    }
+    else
+    {
+        desired = base;
+    }
+    return desired;
+}
+
+void ElfDrumLXRProcessor::syncMorphLasts (float legacyMorph)
+{
+    lastMorph = legacyMorph;
+    lastMorphX = morphXPtr->load();
+    lastMorphY = morphYPtr->load();
+    lastMorphXY = morphXYPtr->load() > 0.5f;
+}
+
 void ElfDrumLXRProcessor::applyKitRequest (KitRequest& req)
 {
-    if (req.targetOnly)
+    if (req.targetOnly || req.target2Only)
     {
-        // Explicit morph target (editor's "Load target .SND"): the current kit and the
-        // APVTS bridge are untouched; re-apply at the current morph amount so a target
-        // swapped in mid-morph is heard immediately.
-        morphTargetKit = req.params;
-        setMorphTargetNameBytes (req.name);
-        const float morph = morphParamPtr->load();
-        std::array<uint8_t, kNumKitParams> desired;
-        if (morph > 0.001f)
-            lxr_morph_kit (baseKit.data(), morphTargetKit.data(),
-                           (uint8_t) juce::roundToInt (morph * 255.0f), desired.data());
+        // Explicit morph target (editor's "Load target .SND" / target B): the
+        // current kit and the APVTS bridge are untouched; re-apply at the
+        // current morph amounts so a target swapped in mid-morph is heard
+        // immediately.
+        if (req.targetOnly)
+        {
+            morphTargetKit = req.params;
+            setMorphTargetNameBytes (req.name);
+        }
         else
-            desired = baseKit;
+        {
+            morphTarget2Kit = req.params;
+            setMorphTarget2NameBytes (req.name);
+        }
+        const float morph = morphParamPtr->load();
+        const auto desired = computeDesired (baseKit, morph);
         host.loadKit (desired.data());
         lastBaseKit = baseKit;
         lastSentKit = desired;
-        lastMorph = morph;
+        syncMorphLasts (morph);
         engineKitLoaded = true;
         return;
     }
@@ -219,22 +316,22 @@ void ElfDrumLXRProcessor::applyKitRequest (KitRequest& req)
         const juce::ScopedLock sl (nameLock);
         morphTargetNameBytes = kitNameBytes;                  // ...whose name is still the old one here
     }
+    if (req.hasTarget2)
+    {
+        morphTarget2Kit = req.target2;                        // state restore (v5)
+        setMorphTarget2NameBytes (req.target2Name);
+    }
     setKitNameBytes (req.name);
     if (req.hasMorph)
         lastMorph = -1.0f;   // force the bridge to re-evaluate with the restored morph below
 
     // Full load through the wrapper's single entry path, honouring the current morph amount.
     const float morph = req.hasMorph ? req.morph : morphParamPtr->load();
-    std::array<uint8_t, kNumKitParams> desired;
-    if (morph > 0.001f)
-        lxr_morph_kit (baseKit.data(), morphTargetKit.data(),
-                       (uint8_t) juce::roundToInt (morph * 255.0f), desired.data());
-    else
-        desired = baseKit;
+    const auto desired = computeDesired (baseKit, morph);
     host.loadKit (desired.data());
     lastBaseKit = baseKit;
     lastSentKit = desired;
-    lastMorph = morph;
+    syncMorphLasts (morph);
     engineKitLoaded = true;
 
     bridgeSuspended = true;      // the async updater aligns APVTS with baseKit; don't fight it
@@ -242,8 +339,43 @@ void ElfDrumLXRProcessor::applyKitRequest (KitRequest& req)
     triggerAsyncUpdate();
 }
 
+int ElfDrumLXRProcessor::retroCommit (int pattern)
+{
+    if (pattern < 0 || pattern >= 64)
+        return 0;
+    seqops::PatternData p;
+    if (! readPatternData (pattern, p))
+        p = seqops::clearedPattern();
+    const uint32_t total = retroWrite.load (std::memory_order_acquire);
+    const uint32_t count = juce::jmin (total, (uint32_t) retroRing.size());
+    int written = 0;
+    for (uint32_t i = total - count; i < total; ++i)
+    {
+        const auto& e = retroRing[i % retroRing.size()];
+        if (e.pattern != pattern)
+            continue;
+        auto& st = p.steps[e.track][e.step];
+        st.note = e.note;
+        st.volume = e.vel;
+        st.prob = 100;
+        p.main[e.track][e.step] = true;
+        ++written;
+    }
+    if (written > 0)
+        writePatternData (pattern, p);
+    return written;
+}
+
 void ElfDrumLXRProcessor::handleAsyncUpdate()
 {
+    // Phase 5 infinity: one guarded mutation per counted 4-bar cycle. Runs
+    // on the message thread (mutateKit is an APVTS-path operation); pendings
+    // counted while the mode is off are discarded, not banked.
+    const int pending = infinityPending.exchange (0);
+    if (pending > 0 && seqInfinityPtr->load() > 0.5f)
+        for (int i = 0; i < pending; ++i)
+            mutateKit (0.12f, 0x1A2B3C00u + (uint32_t) infinityMutations++);
+
     if (! apvtsSyncPending.exchange (false))
         return;
     // message thread: write the loaded kit into APVTS so host automation shows the truth.
@@ -262,8 +394,15 @@ void ElfDrumLXRProcessor::handleAsyncUpdate()
 
 std::array<uint8_t, ElfDrumLXRProcessor::kNumKitParams> ElfDrumLXRProcessor::desiredKit()
 {
+    // Bridge-path desired kit: base + last* morph state (kept in sync with the
+    // APVTS atomics by bridgeParameters / applyKitRequest). Uses the same
+    // composition as computeDesired, but with the tracked amounts so a host's
+    // per-block parameter reads stay consistent within the block.
     std::array<uint8_t, kNumKitParams> desired;
-    if (lastMorph > 0.001f)
+    if (lastMorphXY)
+        kitops::morphXY (lastBaseKit, morphTargetKit, morphTarget2Kit,
+                         lastMorphX, lastMorphY, desired);
+    else if (lastMorph > 0.001f)
         lxr_morph_kit (lastBaseKit.data(), morphTargetKit.data(),
                        (uint8_t) juce::roundToInt (lastMorph * 255.0f), desired.data());
     else
@@ -280,11 +419,13 @@ void ElfDrumLXRProcessor::bridgeParameters()
     for (int i = 0; i < kNumKitParams; ++i)
         cur[i] = (uint8_t) juce::roundToInt (kitParamPtrs[i]->load());
     const float morph = morphParamPtr->load();
+    const float morphX = morphXPtr->load(), morphY = morphYPtr->load();
+    const bool morphXY = morphXYPtr->load() > 0.5f;
 
     if (! engineKitLoaded)
     {
         lastBaseKit = cur;
-        lastMorph = morph;
+        syncMorphLasts (morph);
         const auto desired = desiredKit();
         host.loadKit (desired.data());
         lastSentKit = desired;
@@ -292,11 +433,12 @@ void ElfDrumLXRProcessor::bridgeParameters()
         return;
     }
 
-    if (cur == lastBaseKit && morph == lastMorph)
+    if (cur == lastBaseKit && morph == lastMorph && morphX == lastMorphX
+        && morphY == lastMorphY && morphXY == lastMorphXY)
         return;   // nothing moved: leave the engine (and any parser-driven CC state) alone
 
     lastBaseKit = cur;
-    lastMorph = morph;
+    syncMorphLasts (morph);
     const auto desired = desiredKit();
     if (desired != lastSentKit)
     {
@@ -368,6 +510,27 @@ void ElfDrumLXRProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     for (int v = 1; v < 7; ++v)
         if (host.midiNote (v) != host.midiNote (0)) { stockNotes = false; break; }
 
+    // Phase 5 retro-capture: remember hits (with their sequencer position)
+    // while the sequencer runs; retroCommit() turns them into steps later.
+    auto recordRetro = [this] (int voice, int hitNote, int vel)
+    {
+        if (! lxr_seq_is_running())
+            return;
+        const int track = juce::jmin (voice, 5);   // open hat records onto the hihat track
+        const int step = lxr_seq_step_index (track);
+        if (step < 0 || step > 63)
+            return;
+        RetroEvent e;
+        e.pattern = (uint8_t) lxr_seq_active_pattern();
+        e.track = (uint8_t) track;
+        e.step = (uint8_t) step;
+        e.note = (uint8_t) juce::jlimit (0, 127, hitNote);
+        e.vel = (uint8_t) juce::jlimit (1, 127, vel);
+        const uint32_t w = retroWrite.load (std::memory_order_relaxed);
+        retroRing[w % retroRing.size()] = e;
+        retroWrite.store (w + 1, std::memory_order_release);
+    };
+
     for (const auto meta : midi)
     {
         const auto msg = meta.getMessage();
@@ -375,6 +538,18 @@ void ElfDrumLXRProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         {
             const int chan = msg.getChannel() - 1, note = msg.getNoteNumber(), vel = msg.getVelocity();
             const uint64_t at = blockStart + (uint64_t) msg.getTimeStamp();
+            if (pitch16Ptr->load() > 0.5f)
+            {
+                // Phase 5, 16 Pitches: every note-on plays the selected tonal
+                // voice (drums 1-3 + snare) at the scale-quantised pitch.
+                const int voice = juce::roundToInt (pitch16VoicePtr->load());
+                const int q = kitops::quantizeToScale (note,
+                                                       juce::roundToInt (pitch16RootPtr->load()),
+                                                       juce::roundToInt (pitch16ScalePtr->load()));
+                host.queueHit (voice, q, vel, at);
+                recordRetro (voice, q, vel);
+                continue;
+            }
             for (int v = 0; v < 7; ++v)
             {
                 const bool chanOk = (gchanStored == 0)
@@ -385,7 +560,10 @@ void ElfDrumLXRProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                 {
                     // The firmware's own configuration: per-voice note + channel globals.
                     if (note == host.midiNote (v))
+                    {
                         host.queueHit (v, note, vel, at);
+                        recordRetro (v, note, vel);
+                    }
                 }
                 else if (note == kGmMap[v])
                 {
@@ -394,6 +572,7 @@ void ElfDrumLXRProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
                     // so while they are, the GM drum map selects the voice (as PHX-D01 does)
                     // and the played note's offset from the map note pitches it around 60.
                     host.queueHit (v, 60 + (note - kGmMap[v]), vel, at);
+                    recordRetro (v, 60 + (note - kGmMap[v]), vel);
                 }
             }
         }
@@ -512,6 +691,22 @@ void ElfDrumLXRProcessor::writeParamValues (const int* indices, const uint8_t* v
     }
 }
 
+bool ElfDrumLXRProcessor::applyVoiceSlice (int voice, const std::vector<uint8_t>& slice)
+{
+    const auto& idxs = voiceslice::indicesForVoice (voice);
+    if (slice.size() != idxs.size())
+        return false;
+    std::vector<int> indices (idxs.begin(), idxs.end());
+    writeParamValues (indices.data(), slice.data(), (int) slice.size());
+    return true;
+}
+
+std::array<char, 8> ElfDrumLXRProcessor::currentKitNameBytes() const
+{
+    const juce::ScopedLock sl (nameLock);
+    return kitNameBytes;
+}
+
 void ElfDrumLXRProcessor::randomiseParams (int voice, uint32_t seed)
 {
     // Guarded randomise. The guards (mirroring the morph keep-set's spirit and
@@ -557,6 +752,162 @@ void ElfDrumLXRProcessor::randomiseParams (int voice, uint32_t seed)
         values.push_back ((uint8_t) v);
     }
     writeParamValues (indices.data(), values.data(), (int) indices.size());
+}
+
+namespace {
+// Write only the bytes that differ (the panel-edit path the bridge diffs into
+// the engine; used by the Phase 5 kit transforms below).
+void writeKitDiff (ElfDrumLXRProcessor& proc, const kitops::Kit& from, const kitops::Kit& to)
+{
+    std::vector<int> idx;
+    std::vector<uint8_t> val;
+    for (int i = 0; i < kitops::kNumParams; ++i)
+        if (from[i] != to[i])
+        {
+            idx.push_back (i);
+            val.push_back (to[i]);
+        }
+    if (! idx.empty())
+        proc.writeParamValues (idx.data(), val.data(), (int) idx.size());
+}
+
+void pushHistory (std::vector<kitops::Kit>& history, const kitops::Kit& kit)
+{
+    history.push_back (kit);
+    if (history.size() > 32)
+        history.erase (history.begin());
+}
+} // namespace
+
+void ElfDrumLXRProcessor::mutateKit (float amount, uint32_t seed)
+{
+    const auto cur = currentKitBytes();
+    pushHistory (kitHistory, cur);
+    writeKitDiff (*this, cur, kitops::mutate (cur, amount, seed));
+}
+
+void ElfDrumLXRProcessor::breedWithKit (const kitops::Kit& other, bool perVoice, uint32_t seed)
+{
+    const auto cur = currentKitBytes();
+    pushHistory (kitHistory, cur);
+    writeKitDiff (*this, cur, kitops::breed (cur, other,
+                                             perVoice ? kitops::BreedMode::perVoice
+                                                      : kitops::BreedMode::perParameter,
+                                             seed));
+}
+
+void ElfDrumLXRProcessor::undoKitChange()
+{
+    if (kitHistory.empty())
+        return;
+    const auto target = kitHistory.back();
+    kitHistory.pop_back();
+    writeKitDiff (*this, currentKitBytes(), target);
+}
+
+//==============================================================================
+// Phase 5 (item 6): macros / CTRL-ALL / TEMP. All message-thread, all through
+// the APVTS write path (writeKitDiff), so the bridge replays the results into
+// the engine like any panel edit.
+void ElfDrumLXRProcessor::setMacroAssignment (int macro, int slot, int paramIdx, int depth)
+{
+    if (macro < 0 || macro >= kNumMacros || slot < 0 || slot >= kMacroSlots)
+        return;
+    auto& ms = macroState[(size_t) macro];
+    ms.slots[slot].param = (paramIdx >= 0 && paramIdx < kNumKitParams) ? (uint8_t) paramIdx : (uint8_t) 0xFF;
+    ms.slots[slot].depth = (int16_t) juce::jlimit (-247, 247, depth);
+    ms.anchors[slot] = paramIdx >= 0 && paramIdx < kNumKitParams ? currentKitBytes()[(size_t) paramIdx] : 0;
+    ms.anchorPos = ms.position;
+}
+
+ElfDrumLXRProcessor::MacroAssign ElfDrumLXRProcessor::getMacroAssignment (int macro, int slot) const
+{
+    if (macro < 0 || macro >= kNumMacros || slot < 0 || slot >= kMacroSlots)
+        return {};
+    return macroState[(size_t) macro].slots[slot];
+}
+
+void ElfDrumLXRProcessor::setMacroValue (int macro, float pos)
+{
+    if (macro < 0 || macro >= kNumMacros)
+        return;
+    auto& ms = macroState[(size_t) macro];
+    ms.position = juce::jlimit (0.0f, 1.0f, pos);
+    const auto cur = currentKitBytes();
+    auto desired = cur;
+    for (int s = 0; s < kMacroSlots; ++s)
+    {
+        const auto& a = ms.slots[s];
+        if (a.param == 0xFF)
+            continue;
+        const auto& meta = elfmeta::kKitParams[a.param];
+        const int v = ms.anchors[s] + juce::roundToInt ((float) a.depth * (ms.position - ms.anchorPos));
+        desired[a.param] = (uint8_t) juce::jlimit ((int) meta.minValue, (int) meta.maxValue, v);
+    }
+    writeKitDiff (*this, cur, desired);
+}
+
+std::vector<int> ElfDrumLXRProcessor::ctrlAllParams (int paramIdx)
+{
+    std::vector<int> out;
+    if (paramIdx < 0 || paramIdx >= kNumKitParams)
+        return out;
+    const auto& m = elfmeta::kKitParams[paramIdx];
+    if (m.voice >= 6)
+    {
+        out.push_back (paramIdx);   // non-voice param: CTRL-ALL is just itself
+        return out;
+    }
+    for (const auto& p : elfmeta::kKitParams)
+        if (p.voice < 6 && juce::String (p.name) == juce::String (m.name)
+            && juce::String (p.section) == juce::String (m.section))
+            out.push_back ((int) p.index);
+    return out;
+}
+
+void ElfDrumLXRProcessor::beginCtrlAll (int paramIdx)
+{
+    ctrlAllTargets = ctrlAllParams (paramIdx);
+    if (ctrlAllTargets.empty())
+        return;
+    ctrlAllSnapshot = currentKitBytes();
+    ctrlAllOn = true;
+}
+
+void ElfDrumLXRProcessor::setCtrlAllOffset (int offset)
+{
+    if (! ctrlAllOn)
+        return;
+    const auto cur = currentKitBytes();
+    auto desired = cur;
+    for (int t : ctrlAllTargets)
+    {
+        const auto& meta = elfmeta::kKitParams[t];
+        desired[(size_t) t] = (uint8_t) juce::jlimit ((int) meta.minValue, (int) meta.maxValue,
+                                                      (int) ctrlAllSnapshot[(size_t) t] + offset);
+    }
+    writeKitDiff (*this, cur, desired);
+}
+
+void ElfDrumLXRProcessor::endCtrlAll()
+{
+    if (! ctrlAllOn)
+        return;
+    ctrlAllOn = false;
+    writeKitDiff (*this, currentKitBytes(), ctrlAllSnapshot);
+}
+
+void ElfDrumLXRProcessor::tempStore()
+{
+    tempKit = currentKitBytes();
+    hasTempKit = true;
+}
+
+void ElfDrumLXRProcessor::tempRecall()
+{
+    if (! hasTempKit)
+        return;
+    writeKitDiff (*this, currentKitBytes(), tempKit);
 }
 
 void ElfDrumLXRProcessor::triggerVoice (int voice)
@@ -627,6 +978,49 @@ void ElfDrumLXRProcessor::drainSeqCommands()
     for (int i = 0; i < size2; ++i) apply (seqRing[(size_t) (start2 + i)]);
     seqFifo.finishedRead (size1 + size2);
     seqSnapRequested = true;   // the editor wants to see the result
+}
+
+bool ElfDrumLXRProcessor::readPatternData (int pattern, seqops::PatternData& out)
+{
+    if (pattern < 0 || pattern >= 64)
+        return false;
+    std::vector<uint8_t> blob;
+    uint32_t version = 0;
+    if (! copySeqSnapshot (blob, version))
+        return false;
+    if (blob.size() < lxr_seq_patternset_size())
+        return false;
+    seqops::decode (blob.data(), pattern, out);
+    return true;
+}
+
+void ElfDrumLXRProcessor::writePatternData (int pattern, const seqops::PatternData& data)
+{
+    if (pattern < 0 || pattern >= 64)
+        return;
+    SeqCmd cmd;
+    cmd.pattern = (uint8_t) pattern;
+    cmd.type = SeqCmd::setShuffle;
+    cmd.value = data.shuffle;
+    sendSeqCmd (cmd);
+    for (int t = 0; t < seqops::kTracks; ++t)
+    {
+        cmd.type = SeqCmd::setLength;
+        cmd.track = (uint8_t) t;
+        cmd.value = data.length[t];
+        sendSeqCmd (cmd);
+        for (int s = 0; s < seqops::kSteps; ++s)
+        {
+            cmd.type = SeqCmd::setStep;
+            cmd.step = (uint8_t) s;
+            cmd.stepData = data.steps[t][s];
+            sendSeqCmd (cmd);
+            cmd.type = SeqCmd::setMainStep;
+            cmd.a = data.main[t][s] ? 1 : 0;
+            sendSeqCmd (cmd);
+        }
+    }
+    seqSnapRequested = true;
 }
 
 void ElfDrumLXRProcessor::postSeqRequest (std::unique_ptr<SeqRequest> req)
@@ -864,6 +1258,19 @@ void ElfDrumLXRProcessor::bridgeSequencer (int /*numSamples*/)
         L.dawActive = dawValid ? 1 : 0;
         for (int t = 0; t < 7; ++t) L.stepIndex[t] = lxr_seq_step_index (t);
         L.systick = host.seqSystick();
+
+        // Phase 5 infinity: count track-1 loop wraps (one wrap = one bar of
+        // the pattern's polymeter anchor); every 4th bar asks the message
+        // thread for one guarded mutation (handleAsyncUpdate applies it).
+        if (L.running && prevStep0 >= 8 && L.stepIndex[0] == 0)
+        {
+            if (++infinityBars % 4 == 0)
+            {
+                infinityPending.fetch_add (1);
+                triggerAsyncUpdate();
+            }
+        }
+        prevStep0 = L.stepIndex[0];
     }
 }
 
@@ -1040,13 +1447,48 @@ void ElfDrumLXRProcessor::getStateInformation (juce::MemoryBlock& destData)
     out.writeByte ((char) (seqSongModePtr->load() > 0.5f ? 1 : 0));
     out.writeByte ((char) (seqExtSyncPtr->load() > 0.5f ? 1 : 0));
     out.writeByte ((char) juce::roundToInt (seqPatternPtr->load()));
+
+    // v5 addition: the Phase 5 block — uint32 size, then a self-describing
+    // block (later Phase 5 slices append inside it; readers parse what they
+    // know). Block v1: version byte + morph target B kit (247 B) + its name
+    // (8 B) + morphX/morphY floats + morphXY flag. Block v2 appends the
+    // performance macros: 4 position floats + 16 x (param u8, depth i16).
+    // Block v3 appends 5 bytes: seqInfinity, pitch16 on/voice/scale/root.
+    {
+        juce::MemoryOutputStream block;
+        block.writeByte (3);
+        std::array<uint8_t, kNumKitParams> target2 = morphTarget2Kit;   // benign race, as with target
+        block.write (target2.data(), kNumKitParams);
+        {
+            const juce::ScopedLock sl (nameLock);
+            block.write (morphTarget2NameBytes.data(), 8);
+        }
+        block.writeFloat (morphXPtr->load());
+        block.writeFloat (morphYPtr->load());
+        block.writeByte ((char) (morphXYPtr->load() > 0.5f ? 1 : 0));
+        for (int m = 0; m < kNumMacros; ++m)
+            block.writeFloat (macroState[(size_t) m].position);
+        for (int m = 0; m < kNumMacros; ++m)
+            for (int s = 0; s < kMacroSlots; ++s)
+            {
+                block.writeByte ((char) macroState[(size_t) m].slots[s].param);
+                block.writeShort ((short) macroState[(size_t) m].slots[s].depth);
+            }
+        block.writeByte ((char) (seqInfinityPtr->load() > 0.5f ? 1 : 0));
+        block.writeByte ((char) (pitch16Ptr->load() > 0.5f ? 1 : 0));
+        block.writeByte ((char) juce::roundToInt (pitch16VoicePtr->load()));
+        block.writeByte ((char) juce::roundToInt (pitch16ScalePtr->load()));
+        block.writeByte ((char) juce::roundToInt (pitch16RootPtr->load()));
+        out.writeInt ((int) block.getDataSize());
+        out.write (block.getData(), (int) block.getDataSize());
+    }
 }
 
 void ElfDrumLXRProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     juce::MemoryInputStream in (data, (size_t) sizeInBytes, false);
     const auto version = (uint8_t) in.readByte();
-    if (version != 1 && version != 2 && version != 3 && version != (char) kStateVersion)
+    if (version < 1 || version > (char) kStateVersion)
         return;
     auto req = std::make_unique<KitRequest>();
     if (in.read (req->params.data(), kNumKitParams) != kNumKitParams) return;
@@ -1065,7 +1507,10 @@ void ElfDrumLXRProcessor::setStateInformation (const void* data, int sizeInBytes
     req->hasMorph = true;
     if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter ("morph")))
         p->setValueNotifyingHost (req->morph);
-    postKitRequest (std::move (req));
+    // The kit request is posted at the END of this function (not here, as
+    // before Phase 5): the v5 block parsed below folds morph target B into
+    // the same request, and pendingRequest is a single slot — posting twice
+    // could clobber the kit load.
     if (version >= 3)
     {
         // v3 addition: performance faders (plain APVTS values, not kit data).
@@ -1105,6 +1550,88 @@ void ElfDrumLXRProcessor::setStateInformation (const void* data, int sizeInBytes
         lastSeqPatternParam = patParam;   // the restore request applies it; don't re-request
         postSeqRequest (std::move (sreq));
     }
+    if (version >= 5)
+    {
+        // v5 addition: the Phase 5 block. Parsed defensively — a malformed
+        // block never costs the kit/pattern restore above; it just leaves
+        // target B and the XY state at their current values.
+        const int blockSize = in.readInt();
+        const int remaining = (int) in.getNumBytesRemaining();
+        if (blockSize > 0 && blockSize <= remaining)
+        {
+            std::vector<uint8_t> block ((size_t) blockSize);
+            if (in.read (block.data(), blockSize) == blockSize && blockSize >= 1 + kNumKitParams + 8 + 4 + 4 + 1
+                && (block[0] == 1 || block[0] == 2 || block[0] == 3))
+            {
+                const uint8_t* bp = block.data() + 1;
+                std::memcpy (req->target2.data(), bp, kNumKitParams); bp += kNumKitParams;
+                std::memcpy (req->target2Name.data(), bp, 8); bp += 8;
+                req->hasTarget2 = true;
+                // writeFloat == writeInt of the bit pattern (little-endian).
+                auto readF = [] (const uint8_t* p)
+                {
+                    const uint32_t u = juce::ByteOrder::littleEndianInt (p);
+                    float f;
+                    std::memcpy (&f, &u, 4);
+                    return f;
+                };
+                const float mx = readF (bp); bp += 4;
+                const float my = readF (bp); bp += 4;
+                const bool mxy = *bp != 0; ++bp;
+                if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter ("morphX")))
+                    p->setValueNotifyingHost (mx);
+                if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter ("morphY")))
+                    p->setValueNotifyingHost (my);
+                if (auto* p = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter ("morphXY")))
+                    p->setValueNotifyingHost (mxy ? 1.0f : 0.0f);
+                if (block[0] >= 2 && blockSize - (int) (bp - block.data()) >= kNumMacros * 4 + kNumMacros * kMacroSlots * 3)
+                {
+                    // Macros: anchors re-capture from the restored base kit
+                    // (req->params) at the restored position.
+                    for (int m = 0; m < kNumMacros; ++m)
+                    {
+                        macroState[(size_t) m].position = readF (bp);
+                        bp += 4;
+                    }
+                    for (int m = 0; m < kNumMacros; ++m)
+                    {
+                        auto& ms = macroState[(size_t) m];
+                        ms.anchorPos = ms.position;
+                        for (int s = 0; s < kMacroSlots; ++s)
+                        {
+                            ms.slots[s].param = *bp++;
+                            const uint16_t du = (uint16_t) bp[0] | ((uint16_t) bp[1] << 8);
+                            bp += 2;
+                            int16_t dv;
+                            std::memcpy (&dv, &du, 2);
+                            ms.slots[s].depth = dv;
+                            ms.anchors[s] = ms.slots[s].param < kNumKitParams
+                                                ? req->params[ms.slots[s].param] : 0;
+                        }
+                    }
+                }
+                if (block[0] >= 3 && blockSize - (int) (bp - block.data()) >= 5)
+                {
+                    auto setBool = [this] (const char* id, bool on)
+                    {
+                        if (auto* p = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (id)))
+                            p->setValueNotifyingHost (on ? 1.0f : 0.0f);
+                    };
+                    auto setInt = [this] (const char* id, int v)
+                    {
+                        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (id)))
+                            p->setValueNotifyingHost (p->convertTo0to1 ((float) v));
+                    };
+                    setBool ("seqInfinity", *bp++ != 0);
+                    setBool ("pitch16", *bp++ != 0);
+                    setInt ("pitch16Voice", *bp++);
+                    setInt ("pitch16Scale", *bp++);
+                    setInt ("pitch16Root", *bp++);
+                }
+            }
+        }
+    }
+    postKitRequest (std::move (req));
 }
 
 //==============================================================================

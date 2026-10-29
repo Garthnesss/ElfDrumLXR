@@ -7,6 +7,8 @@
 #include <atomic>
 #include <vector>
 #include "EngineHost.h"
+#include "KitOps.h"
+#include "SeqOps.h"
 #include "ParamMetadata.generated.h"
 
 extern "C" {
@@ -53,6 +55,8 @@ public:
     bool loadKitFile (const juce::File& file);          // .SND (255 B, or 309 B module kit)
     bool isStemsEnabled() const { return host.getStemsEnabled(); }  // Phase 4: any stem bus live in the current layout
     bool loadMorphTargetFile (const juce::File& file);  // set the morph target kit explicitly
+    bool loadMorphTarget2File (const juce::File& file); // Phase 5: Morph XY target B
+    juce::String getMorphTarget2Name();
     bool saveKitFile (const juce::File& file);          // writes name + current kit bytes (255 B)
     void loadFactoryInit();                             // factory INIT kit as a normal load
     void triggerVoice (int voice);                      // 0..6 (6 = open hihat)
@@ -67,9 +71,53 @@ public:
     // the engine exactly as for a panel edit.
     std::array<uint8_t, kNumKitParams> currentKitBytes() const;
     void writeParamValues (const int* indices, const uint8_t* values, int count);
+    // Phase 5 (Kit Blender): apply one voice's slice bytes through the APVTS
+    // path — the bridge CC-replays the edit diff into the engine, exactly
+    // like a panel edit. Returns false on a voice/slice-size mismatch.
+    bool applyVoiceSlice (int voice, const std::vector<uint8_t>& slice);
+    std::array<char, 8> currentKitNameBytes() const;
     // Guarded randomise (guards documented in PluginProcessor.cpp): voice 0..5
     // for one voice, -1 for the whole kit. Deterministic for a given seed.
     void randomiseParams (int voice, uint32_t seed);
+    // Phase 5 (item 3): guarded mutate / breed over the current kit (KitOps.h
+    // semantics: same keep-set as randomise, level floor, seed-reproducible).
+    // Both push the pre-change kit onto the lineage stack for undo.
+    void mutateKit (float amount, uint32_t seed);
+    void breedWithKit (const kitops::Kit& other, bool perVoice, uint32_t seed);
+    void undoKitChange();
+    int kitHistorySize() const { return (int) kitHistory.size(); }
+
+    // --- Phase 5 (item 6): performance page state (message thread) ---
+    // Macros: one knob drives up to 4 kit params. An assignment captures an
+    // anchor (the param's value + the macro position at assignment time);
+    // moving the macro writes anchor + depth * (pos - anchorPos), clamped to
+    // the param's range — the documented delta the gate asserts.
+    static constexpr int kNumMacros = 4, kMacroSlots = 4;
+    struct MacroAssign { uint8_t param = 0xFF; int16_t depth = 64; };
+    void setMacroAssignment (int macro, int slot, int paramIdx, int depth);
+    MacroAssign getMacroAssignment (int macro, int slot) const;
+    void setMacroValue (int macro, float pos);
+    float getMacroPosition (int macro) const { return macroState[macro].position; }
+    // CTRL-ALL: snapshot the kit, then apply one offset to a parameter's
+    // per-voice equivalents (same metadata name+section across the voices).
+    // endCtrlAll restores the snapshot byte-for-byte.
+    static std::vector<int> ctrlAllParams (int paramIdx);
+    void beginCtrlAll (int paramIdx);
+    void setCtrlAllOffset (int offset);
+    void endCtrlAll();
+    bool ctrlAllActive() const { return ctrlAllOn; }
+    // TEMP: jump to a stored kit snapshot and return, exactly.
+    void tempStore();
+    void tempRecall();
+    bool hasTemp() const { return hasTempKit; }
+
+    // --- Phase 5 (item 8): retro-capture ---
+    // Note-ons played while the sequencer runs are recorded (pattern, track,
+    // step, note, velocity) into a ring; retroCommit writes the events that
+    // belong to `pattern` into that pattern through the normal write path.
+    int retroEventCount() const { return (int) retroWrite.load(); }
+    void clearRetro() { retroWrite.store (0); }
+    int retroCommit (int pattern);   // returns how many steps were written
     static juce::String faderParamId (int voice) { return voice < 6 ? "fader" + juce::String (voice) : "faderMaster"; }
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -106,6 +154,14 @@ public:
     // Copy the latest fulfilled snapshot (pattern set bytes followed by song data).
     // Returns false if none has been fulfilled yet; version changes per fulfilment.
     bool copySeqSnapshot (std::vector<uint8_t>& blobOut, uint32_t& versionOut);
+
+    // Phase 5 (item 5): decoded access to one pattern on the firmware data
+    // model. Reads decode the latest fulfilled snapshot (request one first;
+    // returns false if none exists yet). Writes go out as SeqCmds through
+    // the same FIFO the Sequencer tab uses — the firmware pattern set stays
+    // the only model; there is no shadow copy.
+    bool readPatternData (int pattern, seqops::PatternData& out);
+    void writePatternData (int pattern, const seqops::PatternData& data);
 
     void seqLoadPatternFile (int pattern, const juce::File& file);
     void seqSavePatternFile (int pattern, const juce::File& file);
@@ -145,6 +201,11 @@ private:
         bool hasMorph = false;
         bool targetOnly = false;   // loadMorphTargetFile: params/name describe the target
         float morph = 0.0f;
+        // Phase 5: Morph XY target B (state restore / explicit load).
+        std::array<uint8_t, kNumKitParams> target2 {};
+        std::array<char, 8> target2Name {};
+        bool hasTarget2 = false;
+        bool target2Only = false;  // loadMorphTarget2File: params/name describe target B
     };
 
     void handleAsyncUpdate() override;
@@ -157,6 +218,14 @@ private:
     juce::AudioProcessorValueTreeState apvts;
     std::array<std::atomic<float>*, kNumKitParams> kitParamPtrs {};
     std::atomic<float>* morphParamPtr = nullptr;
+    std::atomic<float>* morphXPtr = nullptr;    // Phase 5 Morph XY
+    std::atomic<float>* morphYPtr = nullptr;
+    std::atomic<float>* morphXYPtr = nullptr;
+    std::atomic<float>* seqInfinityPtr = nullptr;   // Phase 5 item 8
+    std::atomic<float>* pitch16Ptr = nullptr;
+    std::atomic<float>* pitch16VoicePtr = nullptr;
+    std::atomic<float>* pitch16ScalePtr = nullptr;
+    std::atomic<float>* pitch16RootPtr = nullptr;
     std::array<std::atomic<float>*, 6> faderPtrs {};
     std::atomic<float>* masterFaderPtr = nullptr;
     std::array<float, 7> lastFaders {};   // audio thread: 0..5 voices, 6 master; -1 = unset
@@ -173,9 +242,12 @@ private:
     // audio-thread-owned kit state
     std::array<uint8_t, kNumKitParams> baseKit {};
     std::array<uint8_t, kNumKitParams> morphTargetKit {};
+    std::array<uint8_t, kNumKitParams> morphTarget2Kit {};   // Phase 5: Morph XY target B
     std::array<uint8_t, kNumKitParams> lastBaseKit {};
     std::array<uint8_t, kNumKitParams> lastSentKit {};
     float lastMorph = -1.0f;
+    float lastMorphX = -1.0f, lastMorphY = -1.0f;   // Phase 5 bridge change detection
+    bool lastMorphXY = false;
     bool engineKitLoaded = false;
 
     std::atomic<KitRequest*> pendingRequest { nullptr };
@@ -214,11 +286,49 @@ private:
     bool lastSeqPlayParam = false, lastSeqSongParam = false, lastSeqExtParam = false;
     float lastSeqTempoParam = -1.0f;
 
+    // Phase 5 lineage: pre-change kit snapshots for mutate/breed undo
+    // (message thread only; capped, oldest dropped).
+    std::vector<kitops::Kit> kitHistory;
+
+    // Phase 5 performance state (message thread only).
+    struct MacroState
+    {
+        MacroAssign slots[kMacroSlots];
+        float position = 0.5f;
+        int anchors[kMacroSlots] {};      // param value at assignment time
+        float anchorPos = 0.5f;           // macro position at assignment time
+    };
+    std::array<MacroState, kNumMacros> macroState {};
+    bool ctrlAllOn = false;
+    kitops::Kit ctrlAllSnapshot {};
+    std::vector<int> ctrlAllTargets;
+    kitops::Kit tempKit {};
+    bool hasTempKit = false;
+
+    // Phase 5 item 8: infinity bookkeeping (audio thread counts, message
+    // thread mutates) + the retro-capture ring (audio thread writes,
+    // message thread reads; single-producer, index-ordered).
+    int prevStep0 = -1;
+    int infinityBars = 0;
+    std::atomic<int> infinityPending { 0 };
+    int infinityMutations = 0;   // message thread
+    struct RetroEvent { uint8_t pattern = 0, track = 0, step = 0, note = 60, vel = 127; };
+    std::array<RetroEvent, 512> retroRing {};
+    std::atomic<uint32_t> retroWrite { 0 };
+
     juce::CriticalSection nameLock;
     std::array<char, 8> kitNameBytes {};
     std::array<char, 8> morphTargetNameBytes {};
+    std::array<char, 8> morphTarget2NameBytes {};
     void setKitNameBytes (const std::array<char, 8>& n);
     void setMorphTargetNameBytes (const std::array<char, 8>& n);
+    void setMorphTarget2NameBytes (const std::array<char, 8>& n);
+    // The one desired-kit computation (audio thread): Morph XY composition
+    // when morphXY is on, else the classic single-target morph at the given
+    // legacy amount. Reads the XY atomics live.
+    std::array<uint8_t, kNumKitParams> computeDesired (const std::array<uint8_t, kNumKitParams>& base,
+                                                       float legacyMorph) const;
+    void syncMorphLasts (float legacyMorph);   // audio thread: refresh lastMorph*
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ElfDrumLXRProcessor)
 };

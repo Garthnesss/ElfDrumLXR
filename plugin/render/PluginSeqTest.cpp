@@ -8,7 +8,7 @@
                to stdout — the gate is a byte diff against tools/seq-ref.
      audio     Gate (e): drum1 steps 0/4/8/12 at 120 BPM; rendered onsets must
                land within ±1 engine block (64 samples) of the expected grid.
-     seqstate  State v4 round-trip: script in processor A -> state blob ->
+     seqstate  State v5 round-trip: script in processor A -> state blob ->
                engine corrupted -> fresh processor B restores -> snapshot and
                re-saved blob identical to A's; plus a hand-truncated v3 blob
                still loads (kit yes, patterns stay at firmware init). */
@@ -212,8 +212,12 @@ int modeSeqState (const juce::File& kitFile)
         a.getStateInformation (blobA);
         a.releaseResources();
     }
-    check (((const uint8_t*) blobA.getData())[0] == 4, "state A is version 4");
-    const size_t expectSize = 543 + 1024 + lxr_seq_patternset_size() + lxr_seq_songdata_size() + 9;
+    check (((const uint8_t*) blobA.getData())[0] == 5, "state A is version 5");
+    // v5 size = v4 size + uint32 block size + the 334-byte Phase 5 block v3
+    // (v1's 265: version + target B kit 247 + name 8 + morphX/Y floats +
+    // morphXY flag; v2 adds 64 of macros; v3 adds 5 of infinity/pitch16).
+    const size_t expectSize = 543 + 1024 + lxr_seq_patternset_size() + lxr_seq_songdata_size() + 9
+                              + 4 + 334;
     check (blobA.getSize() == expectSize, "state A size " + juce::String ((int) blobA.getSize())
                                           + " == " + juce::String ((int) expectSize));
 
