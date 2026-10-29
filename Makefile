@@ -40,9 +40,20 @@ $(B)/lxr-render: $(OBJS) $(B)/obj/tools/lxr-render.o
 $(B)/obj/tools/%.o: tools/%.c engine/engine.h $(B)/.patched
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
 
-test: $(B)/test_intrinsics $(B)/test_midi_parser
+test: $(B)/test_intrinsics $(B)/test_midi_parser $(B)/seq-pat
 	./$(B)/test_intrinsics
 	./$(B)/test_midi_parser
+	./$(B)/seq-pat
+
+# Phase 3 gate (a): .PAT round-trip (also part of `make test`).
+$(B)/seq-pat: $(OBJS) $(B)/obj/tools/seq-pat.o
+	@mkdir -p $(B); $(CC) $^ -o $@ -lm
+
+# Phase 3 gate (b) reference: drives seq_tick() via the wrapper pump and logs every
+# voice trigger (link-time --wrap of the firmware's trigger/automation entry points).
+$(B)/seq-ref: $(OBJS) $(B)/obj/tools/seq-ref.o
+	@mkdir -p $(B); $(CC) $^ -o $@ -lm \
+		-Wl,--wrap=voiceControl_noteOn,--wrap=autoNode_setDestination,--wrap=autoNode_updateValue
 
 $(B)/test_intrinsics: tests/test_intrinsics.c shim/stm32f7xx_hal.h
 	@mkdir -p $(B); $(CC) -std=gnu11 -O2 -Wall -Ishim $< -o $@
