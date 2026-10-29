@@ -309,6 +309,10 @@ void ElfDrumLXRProcessor::bridgeParameters()
 void ElfDrumLXRProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
+    // Phase 4 (5): this instance's engine state stays live for the whole
+    // block — kit application, the seq command drain, the transport drive
+    // and the render below all call the engine directly or via the host.
+    auto engineActivation = host.activation();
 
     if (auto* req = pendingRequest.exchange (nullptr))
     {

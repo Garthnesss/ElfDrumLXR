@@ -47,6 +47,10 @@ file(GLOB ENGINE_C_SOURCES
     "${ENGINE_SRC}/Core/Src/menu/Cc2Text.c")
 list(REMOVE_ITEM ENGINE_C_SOURCES "${ENGINE_SRC}/Core/Src/Soundengine/MIDI/Uart.c")
 
+# Consumers link this archive WHOLE (see the WHOLE_ARCHIVE entries below):
+# the per-instance swap's census (tools/gen_census.py) is taken over the
+# archive, so every member object — including ones no host code references,
+# e.g. MidiMessages.c — must actually be present in the final binary.
 add_library(lxr_engine STATIC
     ${ENGINE_C_SOURCES}
     "${CMAKE_CURRENT_SOURCE_DIR}/../engine/engine.c"
@@ -97,7 +101,7 @@ target_sources(ElfDrumLXR PRIVATE
     src/PluginProcessor.cpp
     src/PluginEditor.cpp
     src/SeqEditor.cpp
-    src/EngineHost.cpp)
+    src/EngineHost.cpp src/EngineSwap.cpp)
 target_include_directories(ElfDrumLXR PRIVATE
     src
     vendor/r8brain-free-src)
@@ -106,7 +110,7 @@ target_compile_definitions(ElfDrumLXR PRIVATE
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0)
 target_link_libraries(ElfDrumLXR PRIVATE
-    lxr_engine
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
     juce::juce_audio_basics
     juce::juce_audio_devices
     juce::juce_audio_processors
@@ -126,7 +130,7 @@ juce_add_console_app(plugin_render PRODUCT_NAME "plugin-render")
 target_sources(plugin_render PRIVATE
     render/PluginRender.cpp
     src/PluginProcessor.cpp
-    src/EngineHost.cpp)
+    src/EngineHost.cpp src/EngineSwap.cpp)
 target_include_directories(plugin_render PRIVATE
     src
     vendor/r8brain-free-src)
@@ -135,7 +139,7 @@ target_compile_definitions(plugin_render PRIVATE
     JUCE_USE_CURL=0
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_render PRIVATE
-    lxr_engine
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors
@@ -148,7 +152,7 @@ juce_add_console_app(plugin_morph_test PRODUCT_NAME "plugin-morph-test")
 target_sources(plugin_morph_test PRIVATE
     render/PluginMorphTest.cpp
     src/PluginProcessor.cpp
-    src/EngineHost.cpp)
+    src/EngineHost.cpp src/EngineSwap.cpp)
 target_include_directories(plugin_morph_test PRIVATE
     src
     vendor/r8brain-free-src)
@@ -158,7 +162,7 @@ target_compile_definitions(plugin_morph_test PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_morph_test PRIVATE
-    lxr_engine
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors
@@ -176,7 +180,7 @@ juce_add_console_app(plugin_seq_test PRODUCT_NAME "plugin-seq-test")
 target_sources(plugin_seq_test PRIVATE
     render/PluginSeqTest.cpp
     src/PluginProcessor.cpp
-    src/EngineHost.cpp)
+    src/EngineHost.cpp src/EngineSwap.cpp)
 target_include_directories(plugin_seq_test PRIVATE
     src
     ../tools
@@ -187,7 +191,7 @@ target_compile_definitions(plugin_seq_test PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_seq_test PRIVATE
-    lxr_engine
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors
@@ -204,7 +208,7 @@ juce_add_console_app(plugin_stem_test PRODUCT_NAME "plugin-stem-test")
 target_sources(plugin_stem_test PRIVATE
     render/PluginStemTest.cpp
     src/PluginProcessor.cpp
-    src/EngineHost.cpp)
+    src/EngineHost.cpp src/EngineSwap.cpp)
 target_include_directories(plugin_stem_test PRIVATE
     src
     vendor/r8brain-free-src)
@@ -214,7 +218,7 @@ target_compile_definitions(plugin_stem_test PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_stem_test PRIVATE
-    lxr_engine
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors
@@ -236,12 +240,15 @@ if(ELF_BUILD_CLAP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/clap-juce-exten
 
     # Minimal CLAP host for the headless load/render smoke (tools not linked
     # against JUCE or the plugin — it dlopen()s the .clap like a real host).
-    add_executable(clap_smoke_test render/ClapSmokeTest.cpp)
-    target_include_directories(clap_smoke_test PRIVATE
-        vendor/clap-juce-extensions/clap-libs/clap/include)
-    target_link_libraries(clap_smoke_test PRIVATE ${CMAKE_DL_LIBS})
-    set_target_properties(clap_smoke_test PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clap_smoke_test_artefacts")
+    # Linux-only (dlfcn); the .clap itself builds on every platform.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(clap_smoke_test render/ClapSmokeTest.cpp)
+        target_include_directories(clap_smoke_test PRIVATE
+            vendor/clap-juce-extensions/clap-libs/clap/include)
+        target_link_libraries(clap_smoke_test PRIVATE ${CMAKE_DL_LIBS})
+        set_target_properties(clap_smoke_test PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/clap_smoke_test_artefacts")
+    endif()
 elseif(ELF_BUILD_CLAP)
     message(WARNING "clap-juce-extensions not in plugin/vendor — run plugin/fetch-deps.sh; CLAP target skipped.")
 endif()
@@ -252,7 +259,7 @@ juce_add_console_app(plugin_panel_test PRODUCT_NAME "plugin-panel-test")
 target_sources(plugin_panel_test PRIVATE
     render/PanelTest.cpp
     src/PluginProcessor.cpp
-    src/EngineHost.cpp)
+    src/EngineHost.cpp src/EngineSwap.cpp)
 target_include_directories(plugin_panel_test PRIVATE
     src
     vendor/r8brain-free-src)
@@ -262,11 +269,35 @@ target_compile_definitions(plugin_panel_test PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     ELF_NO_EDITOR=1)
 target_link_libraries(plugin_panel_test PRIVATE
-    lxr_engine
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
     juce::juce_audio_basics
     juce::juce_audio_formats
     juce::juce_audio_processors
     juce::juce_core
     juce::juce_data_structures
     juce::juce_dsp
+    juce::juce_events)
+
+# Phase 4 (5) gate harness: two processors, interleaved blocks (see
+# tools/instance-gate.sh). Same engine + processor sources as the plugin.
+juce_add_console_app(plugin_instance_test PRODUCT_NAME "ElfDrumLXR Instance Test")
+target_sources(plugin_instance_test PRIVATE
+    render/PluginInstanceTest.cpp
+    src/PluginProcessor.cpp
+    src/EngineHost.cpp src/EngineSwap.cpp)
+target_include_directories(plugin_instance_test PRIVATE
+    src
+    vendor/r8brain-free-src)
+target_compile_definitions(plugin_instance_test PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    ELF_NO_EDITOR=1)
+target_link_libraries(plugin_instance_test PRIVATE
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,lxr_engine>"
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_core
+    juce::juce_data_structures
     juce::juce_events)

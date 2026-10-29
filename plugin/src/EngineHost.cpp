@@ -1,4 +1,5 @@
 #include "EngineHost.h"
+#include "EngineSwap.h"
 #include "CDSPResampler.h"
 #include <algorithm>
 #include <atomic>
@@ -16,6 +17,9 @@ extern "C" {
 static std::atomic<int> engineUsers { 0 };
 static std::once_flag engineInitFlag;
 
+// Phase 4 (5): the instance whose activation guard the calling thread holds.
+static thread_local const EngineHost* tlsActiveHost = nullptr;
+
 namespace {
 // r8brain settings: 150 dB stop-band and a 2.5% transition band are far beyond what drum
 // transients need, and keep the (linear-phase) latency moderate. Measured at prepare().
@@ -31,12 +35,66 @@ r8b::CDSPResampler* makeResampler (double src, double dst)
 } // namespace
 
 EngineHost::EngineHost() = default;
-EngineHost::~EngineHost() = default;
+
+EngineHost::~EngineHost()
+{
+    auto& swap = EngineSwap::instance();
+    std::lock_guard<std::mutex> g (swap.mutex);
+    if (swap.owner == this) swap.owner = nullptr;   // live globals become unowned
+    if (tlsActiveHost == this) tlsActiveHost = nullptr;
+}
+
+// --- Phase 4 (5): per-instance activation -----------------------------------
+// The swap mutex is held for the whole activation: engine calls from two
+// instances can interleave at guard boundaries but never mid-call, and the
+// state switch is atomic with respect to every engine touch (they all take
+// this guard — directly, or via the processor's processBlock guard).
+EngineHost::Activation::~Activation()
+{
+    if (engaged)
+    {
+        tlsActiveHost = nullptr;
+        EngineSwap::instance().mutex.unlock();
+    }
+}
+
+EngineHost::Activation EngineHost::activation() const
+{
+    Activation a;
+    if (tlsActiveHost == this) return a;            // nested: already live
+    auto& swap = EngineSwap::instance();
+    swap.mutex.lock();
+    tlsActiveHost = this;
+    a.engaged = true;
+    if (swap.available() && swap.owner != this)
+    {
+        if (swap.owner != nullptr && swap.owner->blobValid)
+            swap.saveTo (swap.owner->instanceBlob);
+        if (blobValid)
+            swap.loadFrom (instanceBlob);
+        else if (swap.hasPristine())
+        {
+            instanceBlob = swap.pristine();        // start from post-init state
+            swap.loadFrom (instanceBlob);
+            blobValid = true;
+        }
+        else
+        {
+            // Virgin globals: no instance has ever owned them, so they ARE
+            // this instance's (post-init) state. Capture them as pristine
+            // for every later instance.
+            swap.capturePristineIfNeeded();
+        }
+        swap.owner = const_cast<EngineHost*> (this);
+    }
+    return a;
+}
 
 void EngineHost::prepare (double hostSampleRate)
 {
     hostRate = hostSampleRate;
     std::call_once (engineInitFlag, [] { lxr_init(); });
+    auto act = activation();   // my state live (pristine capture on first use)
     ++engineUsers;
 
     latencySamples = measureLatency();
@@ -66,7 +124,7 @@ void EngineHost::prepare (double hostSampleRate)
     prepared = true;
 }
 
-uint32_t EngineHost::seqSystick() const { return lxr_seq_systick(); }
+uint32_t EngineHost::seqSystick() const { auto act = activation(); return lxr_seq_systick(); }
 
 void EngineHost::release()
 {
@@ -108,9 +166,9 @@ int EngineHost::measureLatency()
     return 0; // passthrough (equal rates) or pathological; treat as no latency
 }
 
-void EngineHost::loadKit (const uint8_t params[247]) { lxr_load_params (params); }
-void EngineHost::editKit (const uint8_t params[247]) { lxr_edit_params (params); }
-void EngineHost::setFader (int voice, float gain) { lxr_set_fader (voice, gain); }
+void EngineHost::loadKit (const uint8_t params[247]) { auto act = activation(); lxr_load_params (params); }
+void EngineHost::editKit (const uint8_t params[247]) { auto act = activation(); lxr_edit_params (params); }
+void EngineHost::setFader (int voice, float gain) { auto act = activation(); lxr_set_fader (voice, gain); }
 
 void EngineHost::queueHit (int voice, int note, int velocity, uint64_t atHostSample)
 {
@@ -120,12 +178,13 @@ void EngineHost::queueHit (int voice, int note, int velocity, uint64_t atHostSam
 
 void EngineHost::midiBytes (const uint8_t* data, int len) { lxr_midi_bytes (data, len); }
 
-uint8_t EngineHost::midiNote (int voice) const { return lxr_midi_note (voice); }
-uint8_t EngineHost::midiChannel (int voice) const { return lxr_midi_channel (voice); }
-uint8_t EngineHost::globalChannel() const { return lxr_global_channel(); }
+uint8_t EngineHost::midiNote (int voice) const { auto act = activation(); return lxr_midi_note (voice); }
+uint8_t EngineHost::midiChannel (int voice) const { auto act = activation(); return lxr_midi_channel (voice); }
+uint8_t EngineHost::globalChannel() const { auto act = activation(); return lxr_global_channel(); }
 
 void EngineHost::generateBlock()
 {
+    auto act = activation();   // the whole block renders under my state
     const uint64_t blockStart = engineFrames;
     const uint64_t blockEnd = blockStart + kBlock;
 

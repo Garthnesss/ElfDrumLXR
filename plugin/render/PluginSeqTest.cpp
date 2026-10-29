@@ -217,7 +217,10 @@ int modeSeqState (const juce::File& kitFile)
     check (blobA.getSize() == expectSize, "state A size " + juce::String ((int) blobA.getSize())
                                           + " == " + juce::String ((int) expectSize));
 
-    // Corrupt the engine, then B restores from the blob.
+    // Corrupt the (currently unowned) engine globals, then B restores from
+    // the blob. Pre-Phase-4 this dirtied B's starting point directly; with
+    // per-instance state B starts pristine either way, and the restore
+    // assertions below verify the blob lands completely.
     lxr_seq_clear_pattern (0);
     {
         LxrStep junk {}; junk.volume = 3; junk.prob = 3; junk.note = 3;
@@ -248,9 +251,11 @@ int modeSeqState (const juce::File& kitFile)
            "re-saved state blob byte-identical to A");
 
     // v3 compat: truncate A's blob to the v3 body and flip the version byte.
-    // The kit must restore; the pattern set must NOT change (the engine is a
-    // process-wide singleton, so "unchanged" is measured against snapA, the
-    // state B's restore left behind).
+    // The kit must restore; the pattern set must NOT change. Since Phase 4
+    // (5) instances are isolated, C starts from the pristine set (NOT from
+    // whatever A/B left behind — before Phase 4 the singleton made snapA
+    // the only possible expectation); "untouched" is measured against C's
+    // own pre-load snapshot.
     {
         juce::MemoryBlock blob3;
         blob3.append (blobA.getData(), 543);
@@ -260,14 +265,17 @@ int modeSeqState (const juce::File& kitFile)
         c.setPlayHead (&ph);
         c.setPlayConfigDetails (0, 4, kRate, kBlock);
         c.prepareToPlay (kRate, kBlock);
-        c.setStateInformation (blob3.getData(), (int) blob3.getSize());
         int bc = 0;
+        uint32_t v = 0;
+        std::vector<uint8_t> snapC0;
+        check (waitSnapshot (c, ph, bc, snapC0, v), "snapshot C before v3 load");
+        check (snapC0 != snapA, "fresh instance does not inherit A's pattern set (Phase 4 isolation)");
+        c.setStateInformation (blob3.getData(), (int) blob3.getSize());
         settle (c, ph, bc);
         check (c.currentKitBytes() == kitParams, "v3 load restores the kit");
-        uint32_t v = 0;
         std::vector<uint8_t> snapC;
         check (waitSnapshot (c, ph, bc, snapC, v), "snapshot C after v3 load");
-        check (snapC == snapA, "v3 load leaves the pattern set untouched");
+        check (snapC == snapC0, "v3 load leaves the pattern set untouched");
         c.releaseResources();
     }
     return failures ? 1 : 0;

@@ -22,6 +22,24 @@ public:
     EngineHost();
     ~EngineHost();
 
+    /* Per-instance activation (Phase 4 (5)): while the returned guard is
+       alive, THIS instance's engine state is the live one and the swap
+       mutex is held by this thread. Every engine-touching method below
+       takes the guard itself; nested guards on the same thread/instance
+       are no-ops, so callers (processBlock) can hold one guard across a
+       whole block of engine calls. When the swap is unavailable the guard
+       is a pass-through and behaviour is the Phase 0-3 singleton's. */
+    struct Activation
+    {
+        bool engaged = false;
+        ~Activation();
+        Activation() = default;
+        Activation (const Activation&) = delete;
+        Activation& operator= (const Activation&) = delete;
+        Activation (Activation&& o) noexcept : engaged (o.engaged) { o.engaged = false; }
+    };
+    Activation activation() const;
+
     // Prepare for playback at the given host rate. Inits the engine on first use.
     void prepare (double hostSampleRate);
     void release();
@@ -97,5 +115,11 @@ private:
     // — the same rule the gate (b) reference harness uses, which is what makes
     // plugin and reference trigger logs comparable to the unit.
     uint32_t seqSystickBase = 0;
+
+    // Per-instance engine state (Phase 4 (5)); swapped by activation().
+    // mutable: activation() is const so the read-only MIDI mapping queries
+    // can still ensure their own instance is live before reading globals.
+    mutable std::vector<uint8_t> instanceBlob;
+    mutable bool blobValid = false;
     uint64_t seqFrameBase = 0;
 };

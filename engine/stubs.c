@@ -7,6 +7,26 @@
 
 GPIO_TypeDef native_gpio[11];
 RNG_HandleTypeDef hrng;
+
+/* Weak fallback for the stem tap buffer (the strong definition lives in
+   the firmware's mixer.c via patch 04). Experiment builds that apply only
+   a subset of the patches (the reverb A/B gate) still link the wrapper's
+   lxr_stem_data accessor; with no patch 04 the tap simply reads silence. */
+__attribute__((weak)) int16_t mixer_stemData[6][128];
+
+/* Deterministic RNG behind the HAL RNG shim (see shim/stm32f7xx_hal.h):
+   xorshift32 over this ordinary writable global, so the state is part of
+   the engine census and swaps per plugin instance like everything else. */
+uint32_t lxr_rng_state = 0x9E3779B9u;
+uint32_t lxr_rng_next(void)
+{
+    uint32_t x = lxr_rng_state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    lxr_rng_state = x;
+    return x;
+}
 volatile uint32_t systick_ticks;
 uint8_t activeParameters[NUM_PARAMS];
 uint8_t menu_activeBar, menu_activePage, menu_playedPattern, menu_shownPattern, menu_songMenuPosition;

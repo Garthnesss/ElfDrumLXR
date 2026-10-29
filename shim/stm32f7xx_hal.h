@@ -30,8 +30,14 @@ typedef struct { int dummy; } RNG_HandleTypeDef;
 typedef int HAL_StatusTypeDef;
 #define HAL_OK 0
 #include <stdlib.h>
-static inline HAL_StatusTypeDef HAL_RNG_GenerateRandomNumber(RNG_HandleTypeDef *h, uint32_t *v){ (void)h; *v = arc4random(); return HAL_OK; }
-static inline uint32_t HAL_RNG_GetRandomNumber(RNG_HandleTypeDef *h){ (void)h; return arc4random(); }
+/* The hardware RNG is a deterministic xorshift32 whose state is an ordinary
+   engine global (lxr_rng_state in engine/stubs.c) — NOT arc4random(): libc
+   RNG state is process-global and entropy-seeded, which made noise voices
+   non-reproducible and impossible to separate per plugin instance (the
+   Phase 4 (5) partner-invariance gate caught exactly that). */
+uint32_t lxr_rng_next(void);
+static inline HAL_StatusTypeDef HAL_RNG_GenerateRandomNumber(RNG_HandleTypeDef *h, uint32_t *v){ (void)h; *v = lxr_rng_next(); return HAL_OK; }
+static inline uint32_t HAL_RNG_GetRandomNumber(RNG_HandleTypeDef *h){ (void)h; return lxr_rng_next(); }
 static struct { uint32_t CYCCNT, CTRL; } DWT_s;
 #define DWT (&DWT_s)
 static inline uint32_t HAL_RCC_GetHCLKFreq(void){ return 216000000u; }
