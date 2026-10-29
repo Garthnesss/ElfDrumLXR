@@ -1,0 +1,81 @@
+# ElfDrumLXR — cross-platform build + headless gates (Phase 4).
+# Linux runs the full gate suite; macOS and Windows prove the plugin builds
+# (their headless harnesses run where the platform allows: the panel test is
+# portable, plugin_seq_test is GNU-ld-only and stays Linux-only by design).
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libasound2-dev libjack-jackd2-dev \
+            libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev \
+            libfreetype6-dev libwebkit2gtk-4.0-dev libusb-1.0-0-dev
+      - name: Fetch pinned sources
+        run: |
+          ./scripts/fetch-vendor.sh
+          ./plugin/fetch-deps.sh
+      - name: Engine harness gates
+        run: |
+          make -j
+          make test
+      - name: Plugin build
+        run: |
+          cmake -B plugin/build -DCMAKE_BUILD_TYPE=Release -G Ninja
+          cmake --build plugin/build -j
+      - name: Headless plugin gates
+        run: |
+          plugin/build/plugin_panel_test_artefacts/Release/plugin_panel_test metadata
+          plugin/build/plugin_panel_test_artefacts/Release/plugin_panel_test randomise
+          plugin/build/plugin_panel_test_artefacts/Release/plugin_panel_test state tests/kits/flt-bp.SND tests/kits/fx-dist.SND /tmp
+          plugin/build/plugin_panel_test_artefacts/Release/plugin_panel_test slice tests/kits/flt-bp.SND factory/INIT.SND /tmp
+          ./tools/seq-gate.sh
+          ./tools/reverb-gate.sh
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned sources
+        run: |
+          ./scripts/fetch-vendor.sh
+          ./plugin/fetch-deps.sh
+      - name: Plugin build (universal)
+        run: |
+          cmake -B plugin/build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake --build plugin/build -j
+      - name: Panel harness
+        run: |
+          plugin/build/plugin_panel_test_artefacts/Release/plugin_panel_test metadata
+          plugin/build/plugin_panel_test_artefacts/Release/plugin_panel_test randomise
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned sources
+        shell: bash
+        run: |
+          ./scripts/fetch-vendor.sh
+          ./plugin/fetch-deps.sh
+      - name: Plugin build (VST3 + Standalone, MSVC x64)
+        shell: pwsh
+        run: |
+          cmake -B plugin/build -DCMAKE_BUILD_TYPE=Release -A x64
+          cmake --build plugin/build --config Release -j
+      - name: Panel harness
+        shell: pwsh
+        run: |
+          plugin/build/plugin_panel_test_artefacts/Release/plugin_panel_test.exe metadata
+          plugin/build/plugin_panel_test_artefacts/Release/plugin_panel_test.exe randomise
