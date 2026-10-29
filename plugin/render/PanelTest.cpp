@@ -176,7 +176,7 @@ int testMetadata()
     check (named == 247, "every APVTS kit param carries its metadata display name");
     check (ranged == 247, "every APVTS kit param range matches the metadata");
     check (listed == 247, "every enum/mod-target param has a complete value-name list");
-    check (proc.getParameters().size() == 255, "APVTS holds 247 kit + morph + 7 fader params");
+    check (proc.getParameters().size() == 260, "APVTS holds 247 kit + morph + 7 fader + 5 sequencer params");
     return failures;
 }
 

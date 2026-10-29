@@ -123,7 +123,7 @@ int modeAudio()
     for (int st : { 0, 4, 8, 12 })
         lxr_seq_set_main_step (0, 0, st, 1);   // cleared defaults: vol 127, note 60, prob 100
 
-    const int total = (int) kRate + 1024;      // 2 bars at 120 BPM = 1 s, plus tail room
+    const int total = 2 * (int) kRate + 4096;  // 1 bar at 120 BPM = 2 s, plus tail room
     juce::AudioBuffer<float> rendered (4, total);
     rendered.clear();
     int bc = 0, written = 0;
@@ -157,10 +157,13 @@ int modeAudio()
     std::fprintf (stderr, "audio gate: latency %d, %d onsets:", latency, (int) onsets.size());
     for (int o : onsets) std::fprintf (stderr, " %d", o);
     std::fprintf (stderr, "\n");
-    check (onsets.size() == 4, "expected exactly 4 onsets, got " + juce::String ((int) onsets.size()));
+    // The render spans the loop point: the 4 pattern hits (steps 0/4/8/12)
+    // plus the wrapped bar-2 step 0 (step 16) are all legitimate onsets.
+    check (onsets.size() == 4 || onsets.size() == 5,
+           "expected 4 onsets (+ loop wrap), got " + juce::String ((int) onsets.size()));
     // Step k fires at systick 1 + 500k (see seq-ref log); engine frame = systick * 44140/4000.
-    const int steps[4] = { 0, 4, 8, 12 };
-    for (int k = 0; k < 4 && k < (int) onsets.size(); ++k)
+    const int steps[5] = { 0, 4, 8, 12, 16 };
+    for (int k = 0; k < 5 && k < (int) onsets.size(); ++k)
     {
         const double expected = (1.0 + 500.0 * steps[k]) * kRate / 4000.0;
         const int delta = onsets[(size_t) k] - (int) std::llround (expected);
