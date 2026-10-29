@@ -1,13 +1,13 @@
 # LXR Plugin — Status
 
-**Last updated:** 2026-10-28
-**Phase:** Phase 0 COMPLETE on the Muse VM (Linux) — gate passed, evidence below. Phase 1 (JUCE shell) not started. Honest scope: what runs today is the *engine harness* on Linux; no plugin exists yet, and nothing has been built or loaded on macOS/Ableton.
+**Last updated:** 2026-10-28 (Phase 1 session)
+**Phase:** Phase 0 COMPLETE + Phase 0 carry-over (FX/filter kits) CLOSED + Phase 1 (JUCE shell) IMPLEMENTED and gated on the VM; Mac build DONE (universal VST3/AU/Standalone built, ad-hoc signed, installed) with one environmental caveat: `auval` could not validate from the SSH session (see Mac section) — Garth's Ableton load + by-ear test remains his gate. Remote main: `28cf862` (local `4b23a2a`, trees identical).
 
 ## Where things stand
 - Upstream firmware — **EXAMINED** (cloned to `~/workspace/lxr-desktop-app`, commit a43cd4f; 46,255 LOC of C in Core; DSP ~15.8k LOC; kit = 247 params; sequencer/FX/MIDI specs extracted from source, Oct 28, 2026).
 - DSP host-compilability — **VERIFIED** (Muse compile test on the VM: 31/34 DSP files compile natively with a 2-header stub + `-D__fp16=float` + portable intrinsics; the 3 failures are the known oscillator/mixer/modulation-node stubs).
 - Rival implementation (PHX-D01) — **AUDITED, RUNS** (cloned to `~/workspace/PHX-D01`; its phx-render was built on this VM and rendered the INIT kit: all 6 voices, spectral profile verified — kick 54 Hz peak, snare centroid 6.3 kHz, cymbal 8.4 kHz, hihat 12.4 kHz. Evidence: `~/workspace/your_files/phx-d01-audit-init-render.wav` + `phx-d01-audit-render.png`). Its architecture validates this plan's engine approach; its gaps (standalone-only, reduced sequencer, no releases) define our differentiation.
-- Plugin code — **NOT STARTED**. No JUCE project yet (Phase 1).
+- Plugin code — **BUILT + RUNS headlessly on VM and Mac** (Phase 1, details below). JUCE 8.0.9 + r8brain pinned via `plugin/fetch-deps.sh`; formats VST3 + Standalone (Linux/Windows), + AU on Apple. Editor is the Phase 1 minimal shell (kit name, Load/Save .SND, 7 trigger buttons, morph slider).
 - Engine harness (Phase 0) — **RUNS on the Muse VM** (gcc 13, Linux x86-64): `scripts/fetch-vendor.sh` pins the firmware at a43cd4f into `vendor/lxr-02`; the Makefile copies it to `build/src`, applies `patches/01` (PHX-D01's oscillator overflow patch, verbatim), compiles all 44 engine sources against `shim/` + `engine/` (PHX-D01's wrapper adapted, module mod-matrix dropped) into `tools/lxr-render`.
 - Plan docs — **WRITTEN** (this set, Oct 28, 2026).
 
@@ -19,7 +19,32 @@
 - `__fp16` decision: **ship `_Float16`** (exact IEEE half, same as ARM `__fp16` and PHX-D01's gcc build). The `float` mapping also passes every gate (drums bit-identical again; noise within the same tolerances), so the INIT kit can't discriminate them — `_Float16` wins on principle (it doesn't widen the FX RAM buffer's precision beyond the hardware's). Revisit if an FX-heavy kit ever shows a difference.
 - CPU (rough): ≈0.09 s user time to render 3.6 s of audio including process start + kit load ≈ **40× realtime**, ≈36 µs per 64-frame block on this VM.
 - Surprise worth knowing: the pinned firmware never actually *calls* `__SMLALD`/`__SADD16` — the only `__SADD16` occurrences are inside comments in mixer.c. The live intrinsic set is `__QADD16` (65), `__SSAT` (77), `__PKHBT` (16), `__QSUB16` (3), `__CLZ` (2). The shim still provides the full documented set, tested.
-- Remaining Phase 0 roadmap item NOT done: hand-built test kits exercising every FX type/filter type. The INIT kit leaves the FX bus effectively untested against PHX. Carried into Phase 1 as a harness task (the comparison machinery now exists and is cheap to re-run).
+- Remaining Phase 0 roadmap item NOT done: hand-built test kits exercising every FX type/filter type. The INIT kit leaves the FX bus effectively untested against PHX. Carried into Phase 1 as a harness task (the comparison machinery now exists and is cheap to re-run). **→ CLOSED in Phase 1, see below.**
+
+## Phase 0 carry-over CLOSED — FX/filter golden kits (Oct 28, 2026, VM)
+Six kits in `tests/kits/` built from factory INIT bytes (255 B each), rendered by our `lxr-render` and PHX-D01's `phx-render`, compared per voice segment (peak + spectral centroid) with `tools/render-compare.py`:
+- **fx-dist** (distortion/TUBE, drive P1=100), **fx-ring** (ring mod), **fx-comp** (compressor, ratio 110 — both builds hit the 32768 ceiling identically), **fx-delay** (delay, P1=60/P2=80): **drums 1–3 bit-exact vs PHX in all four** (e.g. fx-dist peaks 25507/25507/25494 both builds); noise voices centroid within ±1.5%, peak within ±12% (worst: fx-ring cymbal −11.9% — a max-statistic on noise, in family).
+- **flt-hp** (drum1 high-pass, freq 110): kick peak 13,921→592 in BOTH builds, bit-exact. **flt-bp** (snare band-pass, freq 70, reso 100): snare centroid ~6.6 kHz → 1,739 Hz (ours) vs 1,757 Hz (PHX).
+- FX param indices (from vendor `Parameters.h`): FX_TYPE 234, ROUTING 235, DRY_WET 236, DIST_TYPE 237, P1–P4 238–241, RATIO 242, WAVE 243, DELAY_TYPE 245. Filter type per voice 191–196 (LP 1, HP 2, BP 3, UBP 4, NOTCH 5, PEAK 6, NAIVE 7, OFF 8). Reverb note: upstream compiles it OUT (`USE_REVERB 0`) — the FX enum is OFF/DISTORTION/RING/COMPRESSOR/DELAY only.
+
+## Phase 1 gate evidence (Oct 28, 2026, Muse VM, Linux)
+- **Builds:** VST3 (`ElfDrumLXR.so`, exports `GetPluginFactory`) + Standalone (ELF) + `plugin-render` console harness all build from `plugin/CMakeLists.txt`. Two real bugs found by the Linux link and fixed in-tree: the engine static lib needed `POSITION_INDEPENDENT_CODE` (non-PIC objects can't enter a shared object), and JUCE's wrapper targets compile with LTO flags — don't mix those objects into non-LTO links.
+- **plugin-render @ 44,140 Hz (native rate, passthrough): BIT-EXACT** — drum1 and drum3 regions are sample-identical (max abs diff 0.0 over 20,000 frames, onset-aligned) to the Phase 0 `lxr-render` output `build/render-f16.wav`; peaks 13921/14329/14622 match the Phase 0 gate exactly. The full plugin path (kit load via CC-replay → APVTS bridge → engine → resampler FIFO → WAV) is lossless at native rate.
+- **plugin-render @ 48,000 Hz (resampled):** all six voices in family — peaks 13922/14328/14721/19506/20518/11826, centroids within a few % of the 44,140 reference (noise voices vary run to run as always).
+- **Resampler latency:** reported 0 at both rates, and that is honest for this design — r8brain withholds input until it can emit time-aligned output (impulse probe: first non-zero output is output sample 0, value 0.978, after 13 input blocks), so there is no time shift to compensate; the cost is input lookahead inside the FIFO, not latency. `setLatencySamples` reports the measured stream offset.
+- **Tests:** `make test` — intrinsics 28/28 + new `tests/test_midi_parser.c` ("midi parser checks passed": plain CC + NRPN entry into the firmware parser, see MIDI below).
+- **.SND state:** kit load path exercised by every render (255 B and 309 B files accepted). `saveKitFile` (exact 255 B hardware layout) is **BUILT, code-reviewed, NOT yet exercised by a harness** — flagged honestly; round-trip test is a Phase 2 warm-up item.
+
+## Firmware MIDI findings (Oct 28, 2026 — corrects an assumption in the original brief)
+- The firmware's per-voice note parameters (`PAR_MIDI_NOTE1..7`) are **inert placeholders upstream**: the parameterArray hooks are commented out in the firmware source and `midi_NoteOverride` is disabled. The real mapping is **channel-based** via `midiParser_parseUartData` (a clean raw-byte entry exists and is what the plugin feeds). Factory defaults (`preset_loadDefaultGlobals`): all voice channels = 1, all voice notes = 48, global channel = 0 (all).
+- Plugin behaviour, given that: if the seven configured notes are not all equal, notes match per-voice on configured note+channel and play at the played pitch; while stock (all 48) a GM map {36,45,50,38,39,42,46} selects the voice and pitch = 60 + (played − map note) — the same pragmatic fallback PHX-D01 used. All non-note, non-sysex/realtime MIDI is passed raw to the firmware parser (CC/NRPN edit parameters exactly as hardware front-panel/MIDI would).
+- Firmware quirk reproduced faithfully (not a plugin bug): there is **no data-entry-fine (CC38) handling** after NRPN selection — a standard NRPN tail CC38=0 writes 0 into the selected parameter. Verified by test: NRPN CC2 #0 (filter drive 1) = 127 moved drum1 peak 13,921→23,260; a CC38 tail then zeroed filter freq 1 and silenced the kick, exactly as the firmware would on hardware.
+
+## Mac build (Oct 28, 2026, Garth's MacBook Pro, macOS 27.0.1)
+- **BUILT:** clone at `~/Projects/ElfDrumLXR` (main `28cf862`), universal (arm64+x86_64) **VST3 + AU + Standalone** from the same CMake; ad-hoc codesigned (`codesign -v` OK); VST3 installed to `~/Library/Audio/Plug-Ins/VST3`, AU to `~/Library/Audio/Plug-Ins/Components`. `_Float16` compiled for both architectures — no float fallback needed.
+- **RUNS on Mac:** the Mac-built `plugin_render` rendered INIT at 44,140 Hz with drum peaks identical to Linux (drum1 13920, drum2 14585).
+- **One real Mac bug found + fixed en route:** Apple clang rejects the firmware's ARM `section(".itcm_text")` attributes (Mach-O needs segment,section) and CMake 4.x silently drops the `-Dsection(x)=unused` define — fixed properly as `patches/02-section-attrs-host.patch` (rewrites the three placement macros to `__attribute__((unused))` in the copied build tree; harness `make test` still green). A one-shot `scripts/build-mac.sh` was therefore NOT needed.
+- **auval: NOT VALIDATED — environment-blocked, not a build failure.** From the SSH session, `auval -v aumu Edlx ElfM` reports "didn't find the component": the SSH session's AU cache is empty and user-domain AudioUnits register in the GUI audit session (`launchctl asuser` is not permitted over SSH). The component itself checks out (plist type `aumu`/subtype `Edlx`/manufacturer `ElfM`, factory symbol `_ElfDrumLXRAUFactory` exported, signature valid). Garth can confirm in Terminal with `auval -v aumu Edlx ElfM`, or skip straight to the Ableton load test.
 
 ## Decisions made
 - **Product name: ElfDrumLXR** (Oct 28, 2026, Garth). Note: the name carries the LXR mark descriptively — Garth's call, made with the trademark caveat in front of him.
@@ -29,12 +54,15 @@
 - Engine runs at native 44,140 Hz + resampling, rather than retuning to host rate (Oct 28, Muse — fidelity call, recorded in ARCHITECTURE.md; PHX's 44,100 shortcut is ~1.6 cents off).
 - Two stereo buses faithful to the hardware DAC pairs for v1; per-voice stems deferred to a Phase 4 experiment (Oct 28, Muse).
 - Reverb ships off, as upstream has it (Oct 28, Muse — fidelity; Phase 4 experiment may revisit).
+- Note mapping (Phase 1): firmware note params are inert upstream + all-48 by default, so the plugin uses configured-note matching when the user has set distinct notes, and a GM-map fallback while stock (see MIDI findings). Deviates from the brief's "read the firmware mapping" only because the firmware mapping it describes doesn't exist in this firmware.
+- Morph semantics (Phase 1): loading a kit makes the previously loaded kit the morph target; morph runs through the firmware's own `lxr_morph_kit`.
+- Engine is a process-wide singleton (`std::call_once` init) — multiple plugin instances in one DAW process share the engine in Phase 1. Documented limitation in `plugin/README.md`; per-instance engines are a Phase 2+ refactor.
 
 ## Open decisions (need Garth's call)
 1. **Release model** — free download (GPL source public) vs paid binaries with source available (GPL allows both). Blocks Phase 4 packaging choices only.
 2. **Validation DAWs** — Ableton Live assumed primary; name any second host (Reaper/Logic) for the Phase 1/4 gates.
 
 ## Next actions
-- [ ] Muse: Phase 1 scaffold (JUCE 8 shell: VST3/AU/Standalone) on Garth's go; first Mac build + Live load test is the Phase 1 gate.
-- [ ] Muse: FX/filter test-kit sweep through the harness (carried over from Phase 0) before the panel work depends on FX behaviour.
-- [ ] Muse: keep the upstream pin under watch — Erica's repo is days old and moving; re-check for new commits before Phase 1 starts.
+- [ ] Garth: Ableton Live load + by-ear play test of the installed VST3/AU (the Phase 1 gate that is his); optional Terminal check `auval -v aumu Edlx ElfM`.
+- [ ] Muse: Phase 2 — generated panel UI from the firmware menu tables (real parameter names/metadata; the `kit000..kit246` APVTS IDs stay stable), plus the .SND save round-trip harness test.
+- [ ] Muse: keep the upstream pin under watch — Erica's repo is days old and moving; re-check for new commits before Phase 2 starts.
