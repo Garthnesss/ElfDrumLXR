@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "ParamMetadata.generated.h"
+#include "SeqEditor.h"
 #include "InitKit.h"
 #include <algorithm>
 #include <set>
@@ -492,6 +493,8 @@ ElfDrumLXRProcessorEditor::ElfDrumLXRProcessorEditor (ElfDrumLXRProcessor& p)
 
         tabs.addTab (kPageNames[pg], juce::Colour (0xff22252b), page.release(), true);
     }
+    // Phase 3: the Sequencer tab (firmware pattern editor, see SeqEditor).
+    tabs.addTab ("Sequencer", juce::Colour (0xff22252b), new SeqEditor (processor), true);
     addAndMakeVisible (tabs);
 
     kitNameLabel.setText (processor.getKitName(), juce::dontSendNotification);

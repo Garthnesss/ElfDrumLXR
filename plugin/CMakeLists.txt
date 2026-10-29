@@ -96,6 +96,7 @@ juce_add_plugin(ElfDrumLXR
 target_sources(ElfDrumLXR PRIVATE
     src/PluginProcessor.cpp
     src/PluginEditor.cpp
+    src/SeqEditor.cpp
     src/EngineHost.cpp)
 target_include_directories(ElfDrumLXR PRIVATE
     src
@@ -164,6 +165,38 @@ target_link_libraries(plugin_morph_test PRIVATE
     juce::juce_core
     juce::juce_data_structures
     juce::juce_events)
+
+# Phase 3 sequencer harness: trigger-log equivalence vs tools/seq-ref (gate b,
+# byte diff of the two logs), audio onset sanity (gate e), state v4 round-trip.
+# The --wrap interception of the firmware's trigger/automation entry points is
+# a GNU ld feature; the target is therefore Linux-only (the Mac runs the panel
+# and render harnesses as its sanity gates).
+if(NOT APPLE)
+juce_add_console_app(plugin_seq_test PRODUCT_NAME "plugin-seq-test")
+target_sources(plugin_seq_test PRIVATE
+    render/PluginSeqTest.cpp
+    src/PluginProcessor.cpp
+    src/EngineHost.cpp)
+target_include_directories(plugin_seq_test PRIVATE
+    src
+    ../tools
+    vendor/r8brain-free-src)
+target_compile_definitions(plugin_seq_test PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    ELF_NO_EDITOR=1)
+target_link_libraries(plugin_seq_test PRIVATE
+    lxr_engine
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_events)
+target_link_options(plugin_seq_test PRIVATE
+    -Wl,--wrap=voiceControl_noteOn,--wrap=autoNode_setDestination,--wrap=autoNode_updateValue)
+endif()
 
 # Phase 2 panel harness: metadata cross-check (APVTS side), voice-slice
 # byte+render proof, state round-trip, guarded-randomise guards.

@@ -52,6 +52,9 @@ public:
 
     uint64_t getHostPosition() const { return hostPosition; }
 
+    // Phase 3: the firmware's systick time base, for the processor's transport logic.
+    uint32_t seqSystick() const;
+
 private:
     struct Hit { uint64_t engineFrame; int voice, note, velocity; };
     void generateBlock();            // render one 64-frame engine block into the resamplers
@@ -69,4 +72,13 @@ private:
     std::vector<Hit> pendingHits;    // sorted by engineFrame when consumed
     uint64_t hostPosition = 0;       // host samples rendered so far
     uint64_t engineFrames = 0;       // engine frames generated so far
+
+    // Phase 3 sequencer pump anchor: engine frame 0 of this prepare() maps to
+    // seqSystickBase on the firmware's free-running systick counter (4000 units/s).
+    // The pump target for an engine-frame frontier F is
+    //   seqSystickBase + llround((F - seqFrameBase) * 4000 / 44140)
+    // — the same rule the gate (b) reference harness uses, which is what makes
+    // plugin and reference trigger logs comparable to the unit.
+    uint32_t seqSystickBase = 0;
+    uint64_t seqFrameBase = 0;
 };

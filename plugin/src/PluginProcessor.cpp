@@ -10,7 +10,9 @@ extern "C" {
 }
 
 namespace {
-constexpr uint8_t kStateVersion = 3;   // v2: + morph target name; v3: + performance faders (v1/v2 still load)
+constexpr uint8_t kStateVersion = 4;   // v2: + morph target name; v3: + performance faders;
+                                       // v4: + pattern set, song data, pattern/song names, seq settings
+                                       // (v1-v3 still load; their pattern set stays at firmware init)
 // GM drum map, used ONLY while the firmware's per-voice note parameters are all at their
 // stock placeholder value (48) — see processBlock. Same map PHX-D01 ships (host/midi.c).
 constexpr int kGmMap[7] = { 36, 45, 50, 38, 39, 42, 46 };
@@ -24,7 +26,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout ElfDrumLXRProcessor::createP
     // clamped every parameter to 0..127 — the metadata ranges fix the
     // mod-target params, whose values run to 228.
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-    params.reserve (kNumKitParams + 8);
+    params.reserve (kNumKitParams + 16);
     for (int i = 0; i < kNumKitParams; ++i)
     {
         const auto& meta = elfmeta::kKitParams[i];
@@ -49,6 +51,20 @@ juce::AudioProcessorValueTreeState::ParameterLayout ElfDrumLXRProcessor::createP
     params.push_back (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { faderParamId (6), 1 }, "Fader Master",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f));
+    // Phase 3 sequencer parameters (new IDs; no collision with kitNNN/morph/fader*).
+    // In a DAW the play state and tempo follow the host transport; seqPlay/seqTempo
+    // drive the internal clock when no playhead position is available (Standalone).
+    params.push_back (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "seqPlay", 1 }, "Seq Play", false));
+    params.push_back (std::make_unique<juce::AudioParameterInt> (
+        juce::ParameterID { "seqPattern", 1 }, "Seq Pattern", 0, 63, 0));
+    params.push_back (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "seqSongMode", 1 }, "Seq Song Mode", false));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "seqTempo", 1 }, "Seq Tempo",
+        juce::NormalisableRange<float> (30.0f, 300.0f, 0.1f), 120.0f));
+    params.push_back (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "seqExtSync", 1 }, "Seq Ext Sync", false));
     return { params.begin(), params.end() };
 }
 
@@ -66,6 +82,14 @@ ElfDrumLXRProcessor::ElfDrumLXRProcessor()
     masterFaderPtr = apvts.getRawParameterValue (faderParamId (6));
     lastFaders.fill (-1.0f);   // force a fader push on the first block
 
+    seqPlayPtr = apvts.getRawParameterValue ("seqPlay");
+    seqPatternPtr = apvts.getRawParameterValue ("seqPattern");
+    seqSongModePtr = apvts.getRawParameterValue ("seqSongMode");
+    seqTempoPtr = apvts.getRawParameterValue ("seqTempo");
+    seqExtSyncPtr = apvts.getRawParameterValue ("seqExtSync");
+    for (auto& n : patternNames) n.fill (' ');
+    for (auto& n : songNames) n.fill (' ');
+
     std::memcpy (baseKit.data(), initkit::params, kNumKitParams);
     std::memcpy (morphTargetKit.data(), initkit::params, kNumKitParams);
     std::array<char, 8> n {};
@@ -78,6 +102,7 @@ ElfDrumLXRProcessor::~ElfDrumLXRProcessor()
 {
     cancelPendingUpdate();
     delete pendingRequest.exchange (nullptr);
+    delete pendingSeqRequest.exchange (nullptr);
 }
 
 void ElfDrumLXRProcessor::setKitNameBytes (const std::array<char, 8>& n)
@@ -111,6 +136,9 @@ void ElfDrumLXRProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     setLatencySamples (host.getLatencySamples());
     scratch.assign ((size_t) std::max (samplesPerBlock, 1), 0.0f);
     engineKitLoaded = false;   // (re)load the kit into the engine on the next block
+    seqWasPlaying = false;     // sequencer transport re-syncs on the next block
+    seqHaveAnchor = false;
+    requestSeqSnapshot();      // so a state save after playback starts has a pattern set
 }
 
 void ElfDrumLXRProcessor::releaseResources() { host.release(); }
@@ -282,6 +310,16 @@ void ElfDrumLXRProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         if (f != lastFaders[6]) { host.setMasterGain (f); lastFaders[6] = f; }
     }
 
+    // --- Phase 3 sequencer: requests, editor commands, transport, snapshot ---
+    if (auto* sreq = pendingSeqRequest.exchange (nullptr))
+    {
+        applySeqRequest (*sreq);
+        delete sreq;
+    }
+    drainSeqCommands();
+    bridgeSequencer (buffer.getNumSamples());
+    fulfilSeqSnapshot();
+
     // --- queued editor triggers fire at this block's start ---
     const uint64_t blockStartPos = host.getHostPosition();
     {
@@ -341,11 +379,14 @@ void ElfDrumLXRProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
         {
             // one-shot drums: the firmware ignores note offs, and so do we
         }
-        else if (! msg.isSysEx() && ! msg.isMidiClock() && ! msg.isMidiStart()
-                 && ! msg.isMidiStop() && ! msg.isMidiContinue())
+        else if (! msg.isSysEx())
         {
             // Everything else (CC incl. the NRPN sequence, pitch bend, program change,
-            // pressure) goes to the firmware's own parser as a raw byte stream.
+            // pressure — and, since Phase 3, the realtime transport bytes) goes to the
+            // firmware's own parser as a raw byte stream. The parser routes MIDI
+            // clock/start/continue/stop into the sequencer's sync path only when
+            // external sync is armed (seqExtSync), exactly as on hardware; before
+            // Phase 3 those bytes were dropped here and the sync path was unreachable.
             host.midiBytes (msg.getRawData(), msg.getRawDataSize());
         }
     }
@@ -500,10 +541,440 @@ void ElfDrumLXRProcessor::triggerVoice (int voice)
 }
 
 //==============================================================================
+// Phase 3 sequencer bridge.
+//
+// Threading: the editor (message thread) sends absolute-value commands through
+// seqFifo and heap requests through pendingSeqRequest; the audio thread applies
+// them inside processBlock, drives transport from the host playhead (or the
+// internal-clock APVTS parameters in Standalone), and publishes a live-state
+// struct + on-demand pattern-set snapshots back. Pattern data itself never
+// leaves the firmware's seq_patternSet — the snapshot is a byte copy of it.
+void ElfDrumLXRProcessor::sendSeqCmd (const SeqCmd& cmd)
+{
+    int start1, size1, start2, size2;
+    seqFifo.prepareToWrite (1, start1, size1, start2, size2);
+    if (size1 > 0)
+    {
+        seqRing[(size_t) start1] = cmd;
+        seqFifo.finishedWrite (1);
+    }
+}
+
+void ElfDrumLXRProcessor::drainSeqCommands()
+{
+    int start1, size1, start2, size2;
+    const int ready = seqFifo.getNumReady();
+    if (ready <= 0)
+        return;
+    seqFifo.prepareToRead (ready, start1, size1, start2, size2);
+    auto apply = [this] (const SeqCmd& c)
+    {
+        switch (c.type)
+        {
+            case SeqCmd::setStep:        lxr_seq_set_step (c.pattern, c.track, c.step, &c.stepData); break;
+            case SeqCmd::setMainStep:    lxr_seq_set_main_step (c.pattern, c.track, c.step, c.a); break;
+            case SeqCmd::setLength:      lxr_seq_set_track_length (c.pattern, c.track, c.value); break;
+            case SeqCmd::setMute:        lxr_seq_set_mute (c.track, c.a); break;
+            case SeqCmd::setShuffle:     lxr_seq_set_shuffle (c.pattern, c.value); break;
+            case SeqCmd::setKitNr:       lxr_seq_set_kit_nr (c.pattern, c.value); break;
+            case SeqCmd::clearPattern:   lxr_seq_clear_pattern (c.pattern); break;
+            case SeqCmd::clearTrack:     lxr_seq_clear_track (c.pattern, c.track); break;
+            case SeqCmd::copyPattern:    lxr_seq_copy_pattern (c.pattern, (uint8_t) c.value); break;
+            case SeqCmd::euklid:         lxr_seq_euklid (c.track, c.pattern, c.value, c.a, c.b); break;
+            case SeqCmd::setRoll:        lxr_seq_set_roll (c.track, c.a); break;
+            case SeqCmd::setRollRate:    lxr_seq_set_roll_rate (c.value); break;
+            case SeqCmd::setSongEntry:   lxr_seq_set_song_entry (c.track, c.a, c.b); break;   // track=slot, a=pos, b=value
+            case SeqCmd::setSongSlot:    lxr_seq_set_song_slot (c.value); break;
+            case SeqCmd::requestPattern:
+                if (c.pattern != lxr_seq_active_pattern() && c.pattern != lxr_seq_pending_pattern())
+                    lxr_seq_request_pattern (c.pattern);
+                break;
+            case SeqCmd::commitPattern:  lxr_seq_commit_pattern (c.pattern); break;
+        }
+    };
+    for (int i = 0; i < size1; ++i) apply (seqRing[(size_t) (start1 + i)]);
+    for (int i = 0; i < size2; ++i) apply (seqRing[(size_t) (start2 + i)]);
+    seqFifo.finishedRead (size1 + size2);
+    seqSnapRequested = true;   // the editor wants to see the result
+}
+
+void ElfDrumLXRProcessor::postSeqRequest (std::unique_ptr<SeqRequest> req)
+{
+    if (auto* old = pendingSeqRequest.exchange (req.release()))
+        delete old;
+}
+
+void ElfDrumLXRProcessor::applySeqRequest (SeqRequest& req)
+{
+    using Kind = SeqRequest::Kind;
+    auto storePatName = [this] (int p, const char* nm)
+    {
+        const juce::ScopedLock sl (patNameLock);
+        std::memcpy (patternNames[(size_t) p].data(), nm, 8);
+    };
+    auto storeSngName = [this] (int s, const char* nm)
+    {
+        const juce::ScopedLock sl (patNameLock);
+        std::memcpy (songNames[(size_t) s].data(), nm, 8);
+    };
+    switch (req.kind)
+    {
+        case Kind::restoreSet:
+            if (req.patternSet.size() == lxr_seq_patternset_size())
+                lxr_seq_patternset_write (req.patternSet.data());
+            if (req.songData.size() == lxr_seq_songdata_size())
+                lxr_seq_songdata_write (req.songData.data());
+            lxr_seq_set_song_slot (req.songSlot);
+            {
+                const juce::ScopedLock sl (patNameLock);
+                patternNames = req.patNames;
+                songNames = req.sngNames;
+            }
+            if (req.activePattern != lxr_seq_active_pattern()
+                && req.activePattern != lxr_seq_pending_pattern())
+                lxr_seq_request_pattern (req.activePattern);
+            break;
+        case Kind::loadPattern:
+        {
+            char nm[8];
+            if (lxr_pat_load_pattern (req.path.toRawUTF8(), req.pattern, nm) == 0)
+                storePatName (req.pattern, nm);
+            break;
+        }
+        case Kind::savePattern:
+        {
+            std::array<char, 8> nm;
+            { const juce::ScopedLock sl (patNameLock); nm = patternNames[(size_t) req.pattern]; }
+            lxr_pat_save_pattern (req.path.toRawUTF8(), req.pattern, nm.data());
+            break;
+        }
+        case Kind::loadSong:
+        {
+            char nm[8];
+            if (lxr_pat_load_song (req.path.toRawUTF8(), req.slot, nm) == 0)
+                storeSngName (req.slot, nm);
+            break;
+        }
+        case Kind::saveSong:
+        {
+            std::array<char, 8> nm;
+            { const juce::ScopedLock sl (patNameLock); nm = songNames[(size_t) req.slot]; }
+            lxr_pat_save_song (req.path.toRawUTF8(), req.slot, nm.data());
+            break;
+        }
+        case Kind::exportSet:
+        {
+            const juce::File dir (req.path);
+            dir.createDirectory();
+            std::array<std::array<char, 8>, 64> pn, sn;
+            { const juce::ScopedLock sl (patNameLock); pn = patternNames; sn = songNames; }
+            for (int p = 0; p < 64; ++p)
+                lxr_pat_save_pattern (dir.getChildFile ("pattern-" + juce::String (p).paddedLeft ('0', 2) + ".pat")
+                                          .getFullPathName().toRawUTF8(), p, pn[(size_t) p].data());
+            for (int s = 0; s < 64; ++s)
+                lxr_pat_save_song (dir.getChildFile ("song-" + juce::String (s).paddedLeft ('0', 2) + ".sng")
+                                       .getFullPathName().toRawUTF8(), s, sn[(size_t) s].data());
+            break;
+        }
+        case Kind::importSet:
+        {
+            const juce::File dir (req.path);
+            for (int p = 0; p < 64; ++p)
+            {
+                const auto f = dir.getChildFile ("pattern-" + juce::String (p).paddedLeft ('0', 2) + ".pat");
+                if (! f.existsAsFile()) continue;
+                char nm[8];
+                if (lxr_pat_load_pattern (f.getFullPathName().toRawUTF8(), p, nm) == 0)
+                    storePatName (p, nm);
+            }
+            for (int s = 0; s < 64; ++s)
+            {
+                const auto f = dir.getChildFile ("song-" + juce::String (s).paddedLeft ('0', 2) + ".sng");
+                if (! f.existsAsFile()) continue;
+                char nm[8];
+                if (lxr_pat_load_song (f.getFullPathName().toRawUTF8(), s, nm) == 0)
+                    storeSngName (s, nm);
+            }
+            break;
+        }
+    }
+    seqSnapRequested = true;
+}
+
+void ElfDrumLXRProcessor::seqSeekToPpq (double ppq)
+{
+    // Position the running sequencer at a host ppq: the step within the active
+    // pattern's span (its longest track) plus the prescale phase. A ppq at or
+    // before 0 is the pattern start, which seq_setRunning has already reset to.
+    const double stepFloat = ppq * 4.0;
+    if (stepFloat <= 0.0)
+        return;
+    const int active = lxr_seq_active_pattern();
+    int span = 1;
+    for (int t = 0; t < 7; ++t)
+        span = std::max (span, lxr_seq_track_length (active, t));
+    const long long g = (long long) std::floor (stepFloat);
+    const int stepInSpan = (int) (g % span);
+    const int prescale = (int) ((stepFloat - (double) g) * 24.0);
+    if (stepInSpan != 0 || prescale != 0)
+        lxr_seq_seek (stepInSpan, prescale);
+}
+
+void ElfDrumLXRProcessor::bridgeSequencer (int /*numSamples*/)
+{
+    // Mode toggles first: the transport logic below uses the fresh ext-sync state.
+    const bool songMode = seqSongModePtr->load() > 0.5f;
+    if (songMode != lastSeqSongParam) { lastSeqSongParam = songMode; lxr_seq_set_song_mode (songMode); }
+    const bool extSync = seqExtSyncPtr->load() > 0.5f;
+    if (extSync != lastSeqExtParam) { lastSeqExtParam = extSync; lxr_seq_set_ext_sync (extSync); }
+
+    // Pattern requests (automatable parameter): routed through the firmware's
+    // pending mechanism. The guard matters — a redundant request for the playing
+    // pattern would restart it at the wrap and could clobber a song advance.
+    const int patParam = juce::roundToInt (seqPatternPtr->load());
+    if (patParam != lastSeqPatternParam)
+    {
+        lastSeqPatternParam = patParam;
+        if (patParam != lxr_seq_active_pattern() && patParam != lxr_seq_pending_pattern())
+            lxr_seq_request_pattern (patParam);
+    }
+
+    bool dawValid = false, dawPlaying = false;
+    double dawPpq = 0.0, dawBpm = 0.0;
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+            if (pos->getPpqPosition().hasValue() && pos->getBpm().hasValue())
+            {
+                dawValid = true;
+                dawPpq = *pos->getPpqPosition();
+                dawBpm = *pos->getBpm();
+                dawPlaying = pos->getIsPlaying();
+            }
+
+    if (extSync)
+    {
+        // Slaved to incoming MIDI clock via the firmware's own sync path (the
+        // bytes are forwarded in the MIDI section of processBlock). Host
+        // transport is ignored, as it is on the hardware when slaved.
+        seqWasPlaying = false;
+        seqHaveAnchor = false;
+    }
+    else if (dawValid)
+    {
+        const int bpmI = juce::jlimit (30, 300, juce::roundToInt (dawBpm));
+        if (dawPlaying)
+        {
+            if (! seqWasPlaying)
+            {
+                if (bpmI != lxr_seq_get_bpm()) lxr_seq_set_bpm (bpmI);
+                lxr_seq_set_running (1);
+                seqSeekToPpq (dawPpq);
+                seqAnchorPpq = dawPpq;
+                seqAnchorSystick = host.seqSystick();
+                seqHaveAnchor = true;
+            }
+            else
+            {
+                if (bpmI != lxr_seq_get_bpm()) lxr_seq_set_bpm (bpmI);
+                if (seqHaveAnchor)
+                {
+                    // Host position vs engine musical position (systick runs at
+                    // 4000 units/s; one quarter = 240000/BPM units). A loop or
+                    // jump diverges instantly; a fractional host tempo against
+                    // the firmware's integer BPM diverges slowly. Resync past
+                    // one step (0.25 quarters) — the correction itself is the
+                    // firmware-granular seek, so it never exceeds a step.
+                    const double engineQ = (double) (host.seqSystick() - seqAnchorSystick)
+                                           * (double) lxr_seq_get_bpm() / 240000.0;
+                    const double hostQ = dawPpq - seqAnchorPpq;
+                    if (std::abs (hostQ - engineQ) > 0.25)
+                    {
+                        seqSeekToPpq (dawPpq);
+                        seqAnchorPpq = dawPpq;
+                        seqAnchorSystick = host.seqSystick();
+                    }
+                }
+            }
+        }
+        else
+        {
+            if (seqWasPlaying) lxr_seq_set_running (0);
+            seqHaveAnchor = false;
+        }
+        seqWasPlaying = dawPlaying;
+    }
+    else
+    {
+        // Internal clock: Standalone, or a host that reports no position.
+        const bool play = seqPlayPtr->load() > 0.5f;
+        if (play != lastSeqPlayParam) { lastSeqPlayParam = play; lxr_seq_set_running (play ? 1 : 0); }
+        const float tempo = seqTempoPtr->load();
+        if (tempo != lastSeqTempoParam)
+        {
+            lastSeqTempoParam = tempo;
+            lxr_seq_set_bpm (juce::jlimit (30, 300, juce::roundToInt (tempo)));
+        }
+        seqWasPlaying = false;
+        seqHaveAnchor = false;
+    }
+
+    // Live state for the editor (read on the message thread under the same lock).
+    {
+        const juce::ScopedLock sl (seqLiveLock);
+        auto& L = seqLiveState;
+        L.activePattern = lxr_seq_active_pattern();
+        L.pendingPattern = lxr_seq_pending_pattern();
+        L.running = lxr_seq_is_running();
+        L.songMode = lxr_seq_song_mode();
+        L.songPos = lxr_seq_song_position();
+        L.songSlot = lxr_seq_song_slot();
+        L.bpm = lxr_seq_get_bpm();
+        L.extSync = lxr_seq_get_ext_sync();
+        L.dawActive = dawValid ? 1 : 0;
+        for (int t = 0; t < 7; ++t) L.stepIndex[t] = lxr_seq_step_index (t);
+        L.systick = host.seqSystick();
+    }
+}
+
+void ElfDrumLXRProcessor::fulfilSeqSnapshot()
+{
+    if (! seqSnapRequested.exchange (false))
+        return;
+    const juce::ScopedLock sl (seqSnapLock);
+    const size_t ps = lxr_seq_patternset_size(), sg = lxr_seq_songdata_size();
+    seqSnapBlob.resize (ps + sg);
+    lxr_seq_patternset_read (seqSnapBlob.data());
+    lxr_seq_songdata_read (seqSnapBlob.data() + ps);
+    ++seqSnapVersionCounter;
+}
+
+void ElfDrumLXRProcessor::requestSeqSnapshot() { seqSnapRequested = true; }
+
+bool ElfDrumLXRProcessor::copySeqSnapshot (std::vector<uint8_t>& blobOut, uint32_t& versionOut)
+{
+    const juce::ScopedLock sl (seqSnapLock);
+    if (seqSnapBlob.empty())
+        return false;
+    blobOut = seqSnapBlob;
+    versionOut = seqSnapVersionCounter;
+    return true;
+}
+
+ElfDrumLXRProcessor::SeqLive ElfDrumLXRProcessor::getSeqLive()
+{
+    const juce::ScopedLock sl (seqLiveLock);
+    return seqLiveState;
+}
+
+void ElfDrumLXRProcessor::seqLoadPatternFile (int pattern, const juce::File& file)
+{
+    auto req = std::make_unique<SeqRequest>();
+    req->kind = SeqRequest::Kind::loadPattern;
+    req->pattern = pattern;
+    req->path = file.getFullPathName();
+    postSeqRequest (std::move (req));
+}
+
+void ElfDrumLXRProcessor::seqSavePatternFile (int pattern, const juce::File& file)
+{
+    auto req = std::make_unique<SeqRequest>();
+    req->kind = SeqRequest::Kind::savePattern;
+    req->pattern = pattern;
+    req->path = file.getFullPathName();
+    postSeqRequest (std::move (req));
+}
+
+void ElfDrumLXRProcessor::seqLoadSongFile (int slot, const juce::File& file)
+{
+    auto req = std::make_unique<SeqRequest>();
+    req->kind = SeqRequest::Kind::loadSong;
+    req->slot = slot;
+    req->path = file.getFullPathName();
+    postSeqRequest (std::move (req));
+}
+
+void ElfDrumLXRProcessor::seqSaveSongFile (int slot, const juce::File& file)
+{
+    auto req = std::make_unique<SeqRequest>();
+    req->kind = SeqRequest::Kind::saveSong;
+    req->slot = slot;
+    req->path = file.getFullPathName();
+    postSeqRequest (std::move (req));
+}
+
+void ElfDrumLXRProcessor::seqExportSet (const juce::File& folder)
+{
+    auto req = std::make_unique<SeqRequest>();
+    req->kind = SeqRequest::Kind::exportSet;
+    req->path = folder.getFullPathName();
+    postSeqRequest (std::move (req));
+}
+
+void ElfDrumLXRProcessor::seqImportSet (const juce::File& folder)
+{
+    auto req = std::make_unique<SeqRequest>();
+    req->kind = SeqRequest::Kind::importSet;
+    req->path = folder.getFullPathName();
+    postSeqRequest (std::move (req));
+}
+
+juce::String ElfDrumLXRProcessor::getPatternName (int pattern)
+{
+    if (pattern < 0 || pattern >= 64) return {};
+    const juce::ScopedLock sl (patNameLock);
+    return juce::String (patternNames[(size_t) pattern].data(), 8).trimEnd();
+}
+
+void ElfDrumLXRProcessor::setPatternName (int pattern, const juce::String& name)
+{
+    if (pattern < 0 || pattern >= 64) return;
+    std::array<char, 8> n;
+    n.fill (' ');
+    const auto utf8 = name.toRawUTF8();
+    std::memcpy (n.data(), utf8, std::min ((size_t) 8, std::strlen (utf8)));
+    const juce::ScopedLock sl (patNameLock);
+    patternNames[(size_t) pattern] = n;
+}
+
+juce::String ElfDrumLXRProcessor::getSongName (int slot)
+{
+    if (slot < 0 || slot >= 64) return {};
+    const juce::ScopedLock sl (patNameLock);
+    return juce::String (songNames[(size_t) slot].data(), 8).trimEnd();
+}
+
+void ElfDrumLXRProcessor::setSongName (int slot, const juce::String& name)
+{
+    if (slot < 0 || slot >= 64) return;
+    std::array<char, 8> n;
+    n.fill (' ');
+    const auto utf8 = name.toRawUTF8();
+    std::memcpy (n.data(), utf8, std::min ((size_t) 8, std::strlen (utf8)));
+    const juce::ScopedLock sl (patNameLock);
+    songNames[(size_t) slot] = n;
+}
+
+//==============================================================================
 void ElfDrumLXRProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    // v4 needs the pattern set, which lives on the audio thread: request a fresh
+    // snapshot and wait briefly for the audio thread to fulfil it (state saves
+    // happen on the message thread while audio runs). prepareToPlay already
+    // requests one, so a blob normally exists; if none can be had, degrade to a
+    // v3 blob (kit only) rather than write a corrupt v4.
+    std::vector<uint8_t> blob;
+    uint32_t version = 0;
+    if (! copySeqSnapshot (blob, version))
+    {
+        requestSeqSnapshot();
+        for (int i = 0; i < 100 && ! copySeqSnapshot (blob, version); ++i)
+            juce::Thread::sleep (1);
+    }
+    const size_t psSize = lxr_seq_patternset_size(), sgSize = lxr_seq_songdata_size();
+    const bool haveSeq = blob.size() == psSize + sgSize;
+
     juce::MemoryOutputStream out (destData, true);
-    out.writeByte ((char) kStateVersion);
+    out.writeByte ((char) (haveSeq ? kStateVersion : 3));
     std::array<uint8_t, kNumKitParams> base, target;
     for (int i = 0; i < kNumKitParams; ++i)
         base[i] = (uint8_t) juce::roundToInt (kitParamPtrs[i]->load());
@@ -519,13 +990,32 @@ void ElfDrumLXRProcessor::getStateInformation (juce::MemoryBlock& destData)
     for (int v = 0; v < 6; ++v)                        // v3 addition: performance faders
         out.writeFloat (faderPtrs[v]->load());
     out.writeFloat (masterFaderPtr->load());
+    if (! haveSeq)
+        return;
+
+    // v4 addition: pattern/song names, the full pattern set (233,536 B), the song
+    // data (4,096 B) and the sequencer settings tail. Total v4 blob ≈ 239 KB.
+    {
+        const juce::ScopedLock sl (patNameLock);
+        for (const auto& n : patternNames) out.write (n.data(), 8);
+        for (const auto& n : songNames) out.write (n.data(), 8);
+    }
+    out.write (blob.data(), (int) psSize);
+    out.write (blob.data() + psSize, (int) sgSize);
+    const auto live = getSeqLive();
+    out.writeByte ((char) live.activePattern);
+    out.writeByte ((char) live.songSlot);
+    out.writeFloat (seqTempoPtr->load());
+    out.writeByte ((char) (seqSongModePtr->load() > 0.5f ? 1 : 0));
+    out.writeByte ((char) (seqExtSyncPtr->load() > 0.5f ? 1 : 0));
+    out.writeByte ((char) juce::roundToInt (seqPatternPtr->load()));
 }
 
 void ElfDrumLXRProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
     juce::MemoryInputStream in (data, (size_t) sizeInBytes, false);
     const auto version = (uint8_t) in.readByte();
-    if (version != 1 && version != 2 && version != (char) kStateVersion)
+    if (version != 1 && version != 2 && version != 3 && version != (char) kStateVersion)
         return;
     auto req = std::make_unique<KitRequest>();
     if (in.read (req->params.data(), kNumKitParams) != kNumKitParams) return;
@@ -554,6 +1044,35 @@ void ElfDrumLXRProcessor::setStateInformation (const void* data, int sizeInBytes
             if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (faderParamId (v))))
                 p->setValueNotifyingHost (f);
         }
+    }
+    if (version >= 4)
+    {
+        // v4 addition: pattern set + song data + names + sequencer settings.
+        auto sreq = std::make_unique<SeqRequest>();
+        sreq->kind = SeqRequest::Kind::restoreSet;
+        for (auto& n : sreq->patNames) if (in.read (n.data(), 8) != 8) return;
+        for (auto& n : sreq->sngNames) if (in.read (n.data(), 8) != 8) return;
+        const size_t psSize = lxr_seq_patternset_size(), sgSize = lxr_seq_songdata_size();
+        sreq->patternSet.resize (psSize);
+        sreq->songData.resize (sgSize);
+        if (in.read (sreq->patternSet.data(), (int) psSize) != (int) psSize) return;
+        if (in.read (sreq->songData.data(), (int) sgSize) != (int) sgSize) return;
+        sreq->activePattern = (uint8_t) in.readByte();
+        sreq->songSlot = (uint8_t) in.readByte();
+        const float tempo = in.readFloat();
+        const bool songMode = in.readByte() != 0;
+        const bool extSync = in.readByte() != 0;
+        const int patParam = (uint8_t) in.readByte();
+        if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter ("seqTempo")))
+            p->setValueNotifyingHost (p->convertTo0to1 (tempo));
+        if (auto* p = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter ("seqSongMode")))
+            p->setValueNotifyingHost (songMode ? 1.0f : 0.0f);
+        if (auto* p = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter ("seqExtSync")))
+            p->setValueNotifyingHost (extSync ? 1.0f : 0.0f);
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter ("seqPattern")))
+            p->setValueNotifyingHost (p->convertTo0to1 ((float) patParam));
+        lastSeqPatternParam = patParam;   // the restore request applies it; don't re-request
+        postSeqRequest (std::move (sreq));
     }
 }
 

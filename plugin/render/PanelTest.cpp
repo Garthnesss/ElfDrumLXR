@@ -334,7 +334,11 @@ int testState (const juce::File& kitAFile, const juce::File& kitBFile, const juc
         a.releaseResources();
     }
     std::printf ("  state blob: %d bytes, version %d\n", (int) blob.getSize(), (int) ((const uint8_t*) blob.getData())[0]);
-    check (blob.getSize() == (size_t) (1 + 247 + 247 + 4 + 8 + 8 + 7 * 4), "v3 state blob size");
+    // Phase 3: state is v4 — the v3 body (543 B) + pattern/song names (1024 B)
+    // + pattern set + song data + the 9-byte sequencer tail.
+    check (blob.getSize() == (size_t) (1 + 247 + 247 + 4 + 8 + 8 + 7 * 4)
+                                 + 1024 + lxr_seq_patternset_size() + lxr_seq_songdata_size() + 9,
+           "v4 state blob size");
 
     ElfDrumLXRProcessor b;
     b.setPlayConfigDetails (0, 4, kRate, kBlock);

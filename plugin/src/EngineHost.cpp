@@ -49,8 +49,12 @@ void EngineHost::prepare (double hostSampleRate)
     pendingHits.clear();
     hostPosition = 0;
     engineFrames = 0;
+    seqFrameBase = 0;
+    seqSystickBase = lxr_seq_systick();
     prepared = true;
 }
+
+uint32_t EngineHost::seqSystick() const { return lxr_seq_systick(); }
 
 void EngineHost::release()
 {
@@ -104,9 +108,21 @@ uint8_t EngineHost::globalChannel() const { return lxr_global_channel(); }
 
 void EngineHost::generateBlock()
 {
-    // Fire every hit whose target frame falls inside this block, in time order.
     const uint64_t blockStart = engineFrames;
     const uint64_t blockEnd = blockStart + kBlock;
+
+    // Phase 3: advance the firmware sequencer to this block's end frontier before
+    // rendering it, so a step due inside the block sounds in the block (the same
+    // relationship soundengine_process() has to its DMA block on hardware: seq_tick()
+    // first, then the sample block). On hardware the systick counter free-runs from
+    // power-on; here it is pumped in lockstep with generated engine frames.
+    {
+        const uint32_t target = seqSystickBase
+            + (uint32_t) std::llround ((double) (blockEnd - seqFrameBase) * 4000.0 / kEngineRate);
+        lxr_seq_pump (target);
+    }
+
+    // Fire every hit whose target frame falls inside this block, in time order.
     std::stable_sort (pendingHits.begin(), pendingHits.end(),
                       [] (const Hit& a, const Hit& b) { return a.engineFrame < b.engineFrame; });
     size_t fired = 0;
